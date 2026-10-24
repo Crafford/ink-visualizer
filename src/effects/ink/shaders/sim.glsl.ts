@@ -60,6 +60,13 @@ uniform float uJetSpeed;       // initial jet speed
 uniform float uJetWidth;       // angular jitter of a jet, radians
 uniform float uJetSpin;        // jet rotation, radians per second
 uniform float uCalmRadius;     // curl noise fades in over this distance from an attractor
+uniform float uBurstSpeed;     // radial launch speed of beat-burst births
+uniform float uBurstCurl;      // tangential share of the burst launch (curls the ejected ink)
+uniform float uBurstLife;      // lifespan multiplier of burst births
+uniform int   uBurstRays;      // rays per attractor per beat (0 = isotropic spray)
+uniform uint  uBeatSeed;       // changes every beat, so each beat shoots new rays
+uniform float uBeatPush;       // outward acceleration on live particles (beat, decaying)
+uniform float uBeatRadius;     // the push fades to 0 at this distance from the nearest attractor
 
 layout(location = 0) out vec4 outA;
 layout(location = 1) out vec4 outB;
@@ -96,7 +103,23 @@ void spawn(int e, vec3 r0, vec3 r1, bool burst, out vec4 a) {
     vec2 radial = normalize(off + 1e-5);
     v = vec2(-radial.y, radial.x) * 0.05 * r1.y;
   }
-  if (burst) v += normalize(off + 1e-5) * (0.25 + 0.35 * r1.x);
+  if (burst) {
+    // Beat: eject from the core. Mostly radial, jittered, plus a signed tangential share so
+    // the ejected ink curls instead of forming a perfect starburst.
+    // Rays: each beat picks a fresh set of directions per attractor, and every burst birth
+    // rides one of them, so the ejected ink reads as strands shot out of the core rather
+    // than an even (and invisible) spray.
+    vec2 radial = normalize(off + 1e-5);
+    if (uBurstRays > 0) {
+      int k = int(floor(r0.z * float(uBurstRays)));
+      float ang = float(pcg3d(uvec3(uint(e), uint(k), uBeatSeed)).x) * (6.28318530718 / 4294967296.0);
+      ang += (r1.z - 0.5) * 0.12;
+      radial = vec2(cos(ang), sin(ang));
+    }
+    vec2 tangent = vec2(-radial.y, radial.x);
+    float s = uBurstSpeed * (0.3 + 0.9 * r1.x);
+    v = radial * s + tangent * s * uBurstCurl * (r1.y * 2.0 - 1.0);
+  }
   a = vec4(c + off, v);
 }
 
@@ -151,6 +174,10 @@ void main() {
   // Swirl falls off with distance: curls near the core, free strands further out.
   vec2 tang = vec2(-best.y, best.x) / max(dist, 1e-4);
   acc += tang * uSwirl * exp(-dist * 3.0);
+  // Beat shove: outward from the nearest core, strongest close in, gone by uBeatRadius.
+  // uBeatPush follows beatStrength (decays over ~250 ms), so the shove lasts several steps.
+  float fall = 1.0 - smoothstep(0.0, uBeatRadius, dist);
+  acc -= (best / max(dist, 1e-3)) * uBeatPush * fall * fall;
 
   v += acc * uDt;
   v *= max(0.0, 1.0 - uDamping * uDt);
@@ -169,7 +196,7 @@ void main() {
     vec4 a;
     spawn(e, vec3(s.yz, s2.x), vec3(s2.y, r1.yz), burst, a);
     outA = a;
-    outB = vec4(0.0, uLifespan * (0.7 + 0.6 * s2.z), B.z, float(e));
+    outB = vec4(0.0, uLifespan * (0.7 + 0.6 * s2.z) * (burst ? uBurstLife : 1.0), B.z, float(e));
   } else {
     outA = vec4(p, v);
     outB = vec4(age, life, B.z, B.w);

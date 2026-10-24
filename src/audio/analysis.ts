@@ -135,9 +135,10 @@ export class FeatureExtractor {
       this.sinceBeat += dt;
     }
 
-    out.raw.bass = clamp01(bass * cfg.bassSens);
-    out.raw.mid = clamp01(mid * cfg.midSens);
-    out.raw.high = clamp01(high * cfg.highSens);
+    // Sensitivity scales after the clamp, so 3 really means up to 3x (not a hard 0..1 cap).
+    out.raw.bass = clamp01(bass) * cfg.bassSens;
+    out.raw.mid = clamp01(mid) * cfg.midSens;
+    out.raw.high = clamp01(high) * cfg.highSens;
 
     const s = this.smooth;
     s.bass = follow(s.bass, out.raw.bass, dt, cfg.smoothRise, cfg.smoothFall);

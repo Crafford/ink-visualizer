@@ -57,6 +57,13 @@ export const LOOK = {
   /** Paper texture: +-amplitude around the paper colour, feature size in CSS px. */
   paperTex: 0.01,
   paperFeature: 260,
+  /** Beat swell: wash gain x (1 + beatStrength * washBeat), wash blur x (1 + bs * washBlurBeat). */
+  washBeat: 1.2,
+  washBlurBeat: 0.8,
+  /** trailDrift (px per step) -> device px per step. */
+  driftGain: 4,
+  /** Line deposit gain = pointSize ^ pointSizeGain (darkness compensation for thicker lines). */
+  pointSizeGain: 0.6,
 };
 
 const BLACK = new THREE.Color(0, 0, 0);
@@ -64,16 +71,17 @@ const BLACK = new THREE.Color(0, 0, 0);
 /**
  * Density, trail feedback and composite for the ink effect.
  *
- *   density (R16F): particles splatted additively, once per simulation step, cleared after
- *                   each trail update, so trails are continuous even when one display frame
- *                   covers several steps.
- *   temp    (RG16F): horizontal blur of the previous trail (+ drift on the wash channel).
- *   trail A/B (RG16F, ping-pong): blurV(temp) * fade + density; R = line, G = wash
- *                   (see shaders/trail.glsl.ts).
- *   screen: tone map, contrast, paper/ink mix, grain.
+ *   density (RGBA16F): particles splatted additively, once per simulation step, cleared
+ *                   after each trail update, so trails are continuous even when one display
+ *                   frame covers several steps. rgb = ink * absorbance of its colour, a = ink.
+ *   temp    (2 x RGBA16F, MRT): horizontal blur of the previous trail (+ drift on the wash).
+ *   trail A/B (2 x RGBA16F, MRT, ping-pong): blurV(temp) * fade + density;
+ *                   attachment 0 = line, 1 = wash (see shaders/trail.glsl.ts).
+ *   screen: coverage, contrast, ink mixture, paper/ink mix, grain.
  *
  * Panel mapping: trailFade = line memory (wash memory derived, longer), trailBlur = wash
- * spread per step, trailDrift = wash drift per step. The line blur is fixed (LOOK.lineBlur).
+ * spread per step, trailDrift = wash drift per step (x LOOK.driftGain), pointSize = line
+ * thickness (line blur x pointSize, line deposit x pointSize^0.6 so darkness roughly holds).
  *
  * Fade, blur and drift are applied per simulation step (pow(fade, n), sigma * sqrt(n),
  * drift * n), so the look does not depend on the display refresh rate.
@@ -90,11 +98,11 @@ export class InkTrails {
   private height = 0;
   private frame = 0;
   private prevClear = new THREE.Color();
-  private inkHex = '';
   private paperHex = '';
 
   private blurH = new FullscreenPass(BLUR_H_FRAG, {
-    uSrc: { value: null as THREE.Texture | null },
+    uLine: { value: null as THREE.Texture | null },
+    uWash: { value: null as THREE.Texture | null },
     uTexel: { value: new THREE.Vector2() },
     uSigmaLine: { value: 0 },
     uSigmaWash: { value: 0 },
@@ -105,23 +113,26 @@ export class InkTrails {
     uTime: { value: 0 },
   });
   private blurV = new FullscreenPass(BLUR_V_FRAG, {
-    uSrc: { value: null as THREE.Texture | null },
+    uLine: { value: null as THREE.Texture | null },
+    uWash: { value: null as THREE.Texture | null },
     uTexel: { value: new THREE.Vector2() },
     uSigmaLine: { value: 0 },
     uSigmaWash: { value: 0 },
     uDensity: { value: null as THREE.Texture | null },
     uFade: { value: new THREE.Vector2(1, 1) },
+    uLineGain: { value: 1 },
   });
   private composite = new FullscreenPass(COMPOSITE_FRAG, {
-    uTrail: { value: null as THREE.Texture | null },
+    uLine: { value: null as THREE.Texture | null },
+    uWash: { value: null as THREE.Texture | null },
     uExposure: { value: LOOK.exposure },
-    uWash: { value: LOOK.wash },
+    uWashGain: { value: LOOK.wash },
     uWashMax: { value: LOOK.washMax },
     uContrast: { value: 1 },
     uPivot: { value: LOOK.pivot },
     uPaper: { value: new THREE.Color() },
-    uInk: { value: new THREE.Color() },
     uGrain: { value: 0 },
+    uGrainCell: { value: 1 },
     uPaperTex: { value: LOOK.paperTex },
     uPaperScale: { value: 1 / LOOK.paperFeature },
     uFrame: { value: 0 },
@@ -140,7 +151,7 @@ export class InkTrails {
     this.height = height;
     const opts: THREE.RenderTargetOptions = {
       type: THREE.HalfFloatType,
-      format: THREE.RedFormat,
+      format: THREE.RGBAFormat,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       wrapS: THREE.ClampToEdgeWrapping,
@@ -149,10 +160,10 @@ export class InkTrails {
       depthBuffer: false,
       stencilBuffer: false,
     };
-    const make = (format: THREE.PixelFormat) => new THREE.WebGLRenderTarget(width, height, { ...opts, format });
-    this.density = make(THREE.RedFormat);
-    this.temp = make(THREE.RGFormat);
-    this.trails = [make(THREE.RGFormat), make(THREE.RGFormat)];
+    const make = (count: number) => new THREE.WebGLRenderTarget(width, height, { ...opts, format: THREE.RGBAFormat, count });
+    this.density = make(1);
+    this.temp = make(2);
+    this.trails = [make(2), make(2)];
     this.cur = 0;
     this.needsClear = true;
   }
@@ -181,7 +192,7 @@ export class InkTrails {
    */
   update(
     renderer: THREE.WebGLRenderer, params: Readonly<Params>, steps: number, dpr: number, time: number,
-    attractors: readonly THREE.Vector2[], attractorCount: number,
+    attractors: readonly THREE.Vector2[], attractorCount: number, beatStrength: number,
   ): void {
     if (!this.trails || steps <= 0) return;
     const prevAutoClear = renderer.autoClear;
@@ -193,17 +204,18 @@ export class InkTrails {
     const write = this.trails[1 - this.cur];
     const aspect = this.width / this.height;
     const rootSteps = Math.sqrt(steps);
-    const sigmaLine = this.look.lineBlur * dpr * rootSteps;
-    const sigmaWash = params.trailBlur * dpr * rootSteps;
+    const sigmaLine = this.look.lineBlur * params.pointSize * dpr * rootSteps;
+    const sigmaWash = params.trailBlur * (1 + beatStrength * this.look.washBlurBeat) * dpr * rootSteps;
     const washFade = 1 - (1 - params.trailFade) * this.look.washFadeRatio;
 
     const h = this.blurH.uniforms;
-    h.uSrc.value = read.texture;
+    h.uLine.value = read.textures[0];
+    h.uWash.value = read.textures[1];
     h.uTexel.value.set(1 / this.width, 1 / this.height);
     h.uSigmaLine.value = sigmaLine;
     h.uSigmaWash.value = sigmaWash;
     h.uAspect.value = aspect;
-    h.uDrift.value = params.trailDrift * dpr * steps;
+    h.uDrift.value = params.trailDrift * this.look.driftGain * dpr * steps;
     h.uTime.value = time;
     h.uAttractorCount.value = Math.max(1, Math.min(MAX_ATTRACTORS, attractorCount));
     for (let i = 0; i < MAX_ATTRACTORS; i++) {
@@ -214,7 +226,11 @@ export class InkTrails {
     this.blurH.render(renderer, this.temp);
 
     const v = this.blurV.uniforms;
-    v.uSrc.value = this.temp!.texture;
+    v.uLine.value = this.temp!.textures[0];
+    v.uWash.value = this.temp!.textures[1];
+    // Thicker strokes spread the same ink wider: compensate, but sub-linearly, because dense
+    // areas (cores) are not diluted by blur and would otherwise get much darker.
+    v.uLineGain.value = Math.pow(params.pointSize, this.look.pointSizeGain);
     v.uTexel.value.set(1 / this.width, 1 / this.height);
     v.uSigmaLine.value = sigmaLine;
     v.uSigmaWash.value = sigmaWash;
@@ -236,22 +252,23 @@ export class InkTrails {
   }
 
   /** Composite the current trail to the default framebuffer. */
-  present(renderer: THREE.WebGLRenderer, params: Readonly<Params>, dpr: number): void {
+  present(renderer: THREE.WebGLRenderer, params: Readonly<Params>, dpr: number, beatStrength: number): void {
     if (!this.trails) return;
     const c = this.composite.uniforms;
-    c.uTrail.value = this.trails[this.cur].texture;
+    c.uLine.value = this.trails[this.cur].textures[0];
+    c.uWash.value = this.trails[this.cur].textures[1];
     c.uContrast.value = params.contrast;
     c.uExposure.value = this.look.exposure;
-    c.uWash.value = this.look.wash;
+    c.uWashGain.value = this.look.wash * (1 + beatStrength * this.look.washBeat);
     c.uWashMax.value = this.look.washMax;
     c.uPivot.value = this.look.pivot;
     c.uPaperTex.value = this.look.paperTex;
     c.uGrain.value = params.grain;
+    c.uGrainCell.value = dpr;
     c.uPaperScale.value = 1 / (this.look.paperFeature * dpr);
     c.uFrame.value = this.frame = (this.frame + 1) >>> 0;
     // Raw shader output is not colour-managed: feed sRGB values to match the swatches.
     // Parse only on change (Color.set(string) allocates).
-    if (params.inkColor !== this.inkHex) { this.inkHex = params.inkColor; c.uInk.value.set(this.inkHex).convertLinearToSRGB(); }
     if (params.paperColor !== this.paperHex) { this.paperHex = params.paperColor; c.uPaper.value.set(this.paperHex).convertLinearToSRGB(); }
 
     const prevAutoClear = renderer.autoClear;

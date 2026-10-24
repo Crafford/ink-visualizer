@@ -17,3 +17,28 @@ export function createLevelMeter(engine: AudioEngine): Component {
   });
   return { el, dispose: off };
 }
+
+/**
+ * Beat blip: an accent dot that flashes on each detected onset and fades over ~200 ms,
+ * plus the tempo estimate in mono. For tuning Beat thresh. by eye.
+ */
+export function createBeatIndicator(engine: AudioEngine): Component {
+  const flash = h('span', { class: 'beat-flash' });
+  const dot = h('span', { class: 'beat-dot', 'aria-hidden': 'true' }, flash);
+  const bpm = h('span', { class: 'beat-bpm mono' }, '--- bpm');
+  const el = h('span', { class: 'beat', title: 'Beat detector' }, dot, bpm);
+  let anim: Animation | null = null;
+  const offBeat = engine.on('beat', (strength, tempo) => {
+    anim?.cancel();
+    const peak = 0.45 + 0.55 * strength;
+    anim = flash.animate(
+      [{ opacity: peak, transform: 'scale(1.35)' }, { opacity: 0, transform: 'scale(1)' }],
+      { duration: 200, easing: 'ease-out' },
+    );
+    bpm.textContent = tempo > 0 ? `${String(tempo).padStart(3, '\u2007')} bpm` : '--- bpm';
+  });
+  const offState = engine.on('state', (st) => {
+    if (!st.source) bpm.textContent = '--- bpm';
+  });
+  return { el, dispose: () => { offBeat(); offState(); anim?.cancel(); } };
+}

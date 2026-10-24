@@ -189,12 +189,17 @@ button, input { font: inherit; color: inherit; }
 .text-field:focus { outline: none; border-bottom-color: var(--c-accent); }
 
 /* Level meter */
-.ctl-meter { display: grid; grid-template-columns: 48px 1fr; align-items: center; height: 18px; }
+.ctl-meter { display: grid; grid-template-columns: 48px 1fr auto; column-gap: 10px; align-items: center; height: 18px; }
 .meter { position: relative; height: 2px; background: var(--c-rule); }
 .meter-fill {
   position: absolute; inset: 0; background: var(--c-accent);
   transform: scaleX(0); transform-origin: left center;
 }
+/* Beat blip: flashes on each onset (opacity animated from LevelMeter.ts). */
+.beat { display: inline-flex; align-items: center; gap: 6px; }
+.beat-dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--c-rule); }
+.beat-flash { position: absolute; inset: 0; border-radius: 50%; background: var(--c-accent); opacity: 0; }
+.beat-bpm { font-size: var(--fs-label); color: var(--c-muted); min-width: 7ch; text-align: right; }
 .meter-peak {
   position: absolute; top: -3px; width: 1px; height: 8px; margin-left: -1px;
   background: var(--c-accent); opacity: 0; left: 0;

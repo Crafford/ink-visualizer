@@ -52,7 +52,7 @@ export class AudioEngine {
   private lastFrameTime = 0;
 
   private readonly handlers: { [K in keyof AudioEvents]: Set<AudioEvents[K]> } = {
-    level: new Set(), state: new Set(), error: new Set(),
+    level: new Set(), beat: new Set(), state: new Set(), error: new Set(),
   };
 
   private _state: TransportState = {
@@ -155,6 +155,7 @@ export class AudioEngine {
     if (!this.extractor) return f;
     this.extractor.extract(dt, this.response, playing, f);
     this.fire('level', f.level, f.peak);
+    if (f.beat) this.fire('beat', f.beatStrength, this.bpm);
     return f;
   }
 

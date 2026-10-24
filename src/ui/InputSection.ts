@@ -2,7 +2,7 @@ import { AudioEngine, MSG } from '../audio/AudioEngine';
 import { h, Disposer, type Component } from './dom';
 import { createTabs } from './components/Tabs';
 import { createButton } from './components/Button';
-import { createLevelMeter } from './components/LevelMeter';
+import { createBeatIndicator, createLevelMeter } from './components/LevelMeter';
 
 type InputTab = 'upload' | 'mic' | 'link' | 'capture';
 
@@ -131,13 +131,15 @@ export function createInputSection(engine: AudioEngine): Component {
 
   const meter = createLevelMeter(engine);
   d.add(meter.dispose);
+  const beat = createBeatIndicator(engine);
+  d.add(beat.dispose);
   d.add(engine.on('error', (e) => say(e.message, true)));
 
   const el = h('div', { class: 'input-section' },
     tabs.el,
     upload, mic, link, capture,
     status,
-    h('div', { class: 'ctl ctl-meter' }, h('span', { class: 'ctl-label' }, 'Level'), meter.el),
+    h('div', { class: 'ctl ctl-meter' }, h('span', { class: 'ctl-label' }, 'Level'), meter.el, beat.el),
   );
   return { el, dispose: () => d.dispose() };
 }

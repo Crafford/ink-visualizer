@@ -25,6 +25,13 @@ export interface SimInputs {
   jetWidth: number;
   jetSpin: number;
   calmRadius: number;
+  burstSpeed: number;
+  burstCurl: number;
+  burstLife: number;
+  burstRays: number;
+  beatSeed: number;
+  beatPush: number;
+  beatRadius: number;
 }
 
 type FloatKind = 'float' | 'half';
@@ -77,6 +84,13 @@ export class ParticleSim {
     uJetWidth: { value: 0.2 },
     uJetSpin: { value: 0.1 },
     uCalmRadius: { value: 0.2 },
+    uBurstSpeed: { value: 0.8 },
+    uBurstCurl: { value: 0.3 },
+    uBurstLife: { value: 1 },
+    uBurstRays: { value: 0 },
+    uBeatSeed: { value: 0 },
+    uBeatPush: { value: 0 },
+    uBeatRadius: { value: 0.8 },
   };
 
   constructor(renderer: THREE.WebGLRenderer, count: number) {
@@ -177,6 +191,13 @@ export class ParticleSim {
     u.uJetWidth.value = s.jetWidth;
     u.uJetSpin.value = s.jetSpin;
     u.uCalmRadius.value = s.calmRadius;
+    u.uBurstSpeed.value = s.burstSpeed;
+    u.uBurstCurl.value = s.burstCurl;
+    u.uBurstLife.value = s.burstLife;
+    u.uBurstRays.value = s.burstRays;
+    u.uBeatSeed.value = s.beatSeed >>> 0;
+    u.uBeatPush.value = s.beatPush;
+    u.uBeatRadius.value = s.beatRadius;
 
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;

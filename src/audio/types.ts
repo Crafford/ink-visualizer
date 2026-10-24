@@ -1,4 +1,4 @@
-/** Unsmoothed band values, 0..1 after adaptive normalisation and sensitivity. */
+/** Unsmoothed band values: 0..1 after adaptive normalisation, times sensitivity (0..3). */
 export interface BandValues {
   bass: number;
   mid: number;
@@ -11,7 +11,7 @@ export interface BandValues {
  * against its own slowly decaying running max, so quiet and loud material both use the range.
  */
 export interface AudioFrame {
-  /** Smoothed band energies (asymmetric rise/fall), after sensitivity. */
+  /** Smoothed band energies (asymmetric rise/fall), times sensitivity: 0..1 at 1, up to 3 at 3. */
   bass: number;
   mid: number;
   high: number;
@@ -84,6 +84,8 @@ export interface TransportState {
 
 export interface AudioEvents {
   level: (level: number, peak: number) => void;
+  /** Fired from getFrame() on the frame an onset is detected. bpm is 0 while unknown. */
+  beat: (strength: number, bpm: number) => void;
   state: (state: Readonly<TransportState>) => void;
   error: (err: Error) => void;
 }

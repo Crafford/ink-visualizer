@@ -19,7 +19,8 @@ src/
   effects/
     types.ts              Effect contract
     registry.ts           id -> EffectFactory
-    ink/InkEffect.ts      first effect (M1 placeholder, M2 GPU pipeline)
+    ink/                  ink effect: InkEffect (TUNE, audio mapping), ParticleSim, Attractors,
+                          InkTrails (density/trail/composite), shaders/
   ui/
     tokens.css, app.css   design tokens and component styles
     dom.ts                h(), Component, Disposer
@@ -38,7 +39,7 @@ Dependency direction: `ui -> app, audio`; `app/stage -> effects, audio, app/stor
 
 ```
 rAF tick (Loop)
-  frame():  audio = engine.getFrame()          // analyser read, smoothing, beat; emits 'level'
+  frame():  audio = engine.getFrame()          // analyser read, smoothing, beat; emits 'level', 'beat'
             params = store.all                 // live read-only view, no copy
   step() x N  (N = accumulated time / 1/60, max 4)
             effect.step({ audio, time, dt: 1/60, params, renderer, size })
@@ -106,20 +107,60 @@ literal types. `Params` (the value bag) and `ParamId` are derived from it. Addin
 parameter is one line in `PARAMS`; the panel control, store validation, reset, preset
 typing and `ctx.params.<id>` all follow automatically.
 
-## Ink effect plan (M2)
+## Ink effect
 
-1. Particle state in two RGBA32F ping-pong textures (pos.xy, vel.xy; age/life in a second
-   pair). sqrt(count) square, 200k desktop, 50k mobile (`defaultMobile`).
-2. Simulation pass (fullscreen quad): curl noise at `turbulenceScale`, pull toward 1 to 3
-   attractors that wander on their own low-frequency noise; `drag`; respawn on age > life
-   near attractors at `emissionRate`; beat adds a radial impulse scaled by `burstSize`.
-   Bass drives attractor pull, mid the curl strength, high the point size jitter.
-3. Splat pass: `gl.POINTS` reading positions in the vertex shader, additive blend into a
-   half-float density target, alpha = `pointOpacity`.
-4. Feedback: previous trail target * `trailFade`, separable blur `trailBlur`, offset by
-   `trailDrift`, plus new density. Ping-pong.
-5. Composite: density -> tone curve (`contrast`) -> mix(paper, ink) -> grain. Inverted
-   look: ink on white paper.
+1. Particle state in two RGBA32F ping-pong MRT textures (pos.xy, vel.xy | age, life, seed,
+   emitterIndex). sqrt(count) square, 200k desktop, 50k mobile (`defaultMobile`).
+2. Simulation pass (fullscreen triangle, `shaders/sim.glsl.ts`): curl noise at `turbulenceScale`,
+   spring + swirl toward the nearest of 1 to 3 wandering attractors (`Attractors.ts`, CPU),
+   `drag`, speed clamp. Births at an attractor: 25% stay in the core, the rest ride a few
+   slowly spinning jets. Respawn on age > life, at `emissionRate`, off-screen, or on a beat
+   (burst, see the audio table). All audio constants live in `TUNE` (InkEffect.ts), exposed
+   as `stage.effect.tune` with `?debug`.
+3. Splat pass (`shaders/points.glsl.ts`): `gl.LINES`, two vertices per particle, no
+   attributes (`gl_VertexID >> 1` indexes the state). Each particle draws the segment it
+   travelled in its last step (min 1 device px), so consecutive steps tile the path and fast
+   particles leave continuous strokes instead of specks. Ink per particle is constant
+   (per-pixel ink = ink / length). Additive into an RGBA16F density target:
+   rgb = ink * absorbance of the particle's attractor colour (-ln of its sRGB value), a = ink.
+   A render-time beat kick (radial expansion about the nearest core) is applied here.
+4. Feedback (`InkTrails.ts`, `shaders/trail.glsl.ts`): two RGBA16F layers in one MRT
+   ping-pong pair, same rgb/a layout as the density.
+   - line: fade `trailFade`, blur `0.6px * pointSize`, deposit x `pointSize^0.6` (thicker
+     strokes, roughly the same darkness; cores are not diluted by blur, so not fully linear).
+   - wash: longer memory (derived from `trailFade`), blur `trailBlur`, drift `trailDrift * 4`
+     px per step outward from the attractors (direction blended over all attractors, so there
+     is no seam between two cores) with a slow swirl.
+   Fade, blur and drift are applied per simulation step, so the look is refresh-rate independent.
+5. Composite: coverage from the a channels exactly as before (line + capped wash, contrast
+   S-curve). Ink colour = exp(-K), K = per-layer mean absorbance rgb / a, layers weighted by
+   coverage. Mixing in absorbance space multiplies colours (subtractive): indigo over oxblood
+   gives a dark violet-brown, and overlapping ink is denser, so darker. With all three colours
+   equal this is identical to the single-colour M4 composite. Result = mix(paper, ink colour,
+   coverage) + paper texture + grain (CSS-px cells; a light floor everywhere, strongest in the
+   midtones).
+
+Per-attractor colours: `inkColor1..3`; the panel shows colour 2 and 3 only when `emitters` >= 2 / 3.
+
+### Audio mapping
+
+Bands arrive already multiplied by their sensitivity slider (0 = off, 1 = nominal, 3 = up to
+3x; the engine clamps the normalised band to 0..1 before applying sensitivity). `bs` is
+`beatStrength` (0.25..1 on the beat frame, decays with tau 250 ms).
+
+| Input | Drives | Mapping |
+|-------|--------|---------|
+| beat (one frame) | burst births | `burstSize * max(bs, 0.25) * 0.4` of all particles respawn at a core and ride 5 fresh rays per attractor (new directions every beat), speed `1.6 * (0.3..1.2)`, 8% tangential, life x 0.5 |
+| bs | push on live particles | outward acceleration `bs * 0.8 * (0.5 + burstSize)`, falloff `(1 - smoothstep(0, 0.45, d))^2` from the nearest core |
+| bs | kick (render only) | positions drawn expanded about the nearest core by `bs * 0.35 * (0.5 + burstSize)`, fading out by d = 0.8; relaxes as bs decays, so beats do not scatter the ink into fog |
+| bs | shiver | turbulence x `(1 + 0.6 bs)` |
+| bs | wash swell | wash gain x `(1 + 1.2 bs)`, wash blur x `(1 + 0.8 bs)` (`trailFade` untouched) |
+| bass | emission, attractor speed | respawn rate x `(1 + 2 bass)`, wander speed x `(1 + 1.5 bass)` |
+| mid | turbulence | x `(1 + 1.5 mid)` |
+| high | noise scale, ink | `turbulenceScale` x `(1 + high)`, ink per particle x `(1 + 0.5 high)` |
+
+The panel's level meter has a beat blip (accent dot, 200 ms fade, brightness from the beat
+strength) and the `engine.bpm` estimate, from the engine's `beat` event, for tuning Beat thresh.
 
 ## Audio
 
@@ -143,7 +184,7 @@ message; the audio track's `ended` event (user clicked "Stop sharing", mic unplu
 
 ```ts
 interface AudioFrame {
-  bass: number; mid: number; high: number;   // smoothed, 0..1, after sensitivity
+  bass: number; mid: number; high: number;   // smoothed, 0..1 x sensitivity (0..3)
   level: number;                             // normalised RMS, smoothed
   peak: number;                              // peak-hold of level (0.8 s hold), for meters
   beat: boolean;                             // true for exactly one frame per onset
@@ -162,7 +203,7 @@ interface AudioFrame {
    would bury a narrow tone in a wide band).
 2. Per-band adaptive normaliser: running max with a 4 s half-life, floored at 50 dB above the
    floor; the 30 dB window below the max maps to 0..1, so silence stays 0.
-3. Sensitivity (`bassSens` etc.), then asymmetric exponential smoothing with time constants
+3. Sensitivity (`bassSens` etc., applied after the 0..1 clamp so 3 means up to 3x), then asymmetric exponential smoothing with time constants
    `smoothRise` / `smoothFall` (framerate independent). `raw` is the value before this step.
 4. Level: time-domain RMS in dBFS through the same kind of normaliser; peak hold 0.8 s, then
    falls 0.6/s.
