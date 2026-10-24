@@ -72,7 +72,7 @@ export const PARAMS = [
   num('trailFade',          'Fade',         'trails',    0.85,  0.99,   0.001, 0.96,   { control: 'knob' }),
   num('trailBlur',          'Blur',         'trails',    0,     4,      0.1,   1,      { unit: 'px' }),
   num('trailDrift',         'Drift',        'trails',    0,     2,      0.01,  0.3,    { unit: 'px' }),
-  num('pointOpacity',       'Opacity',      'look',      0.02,  0.5,    0.01,  0.15),
+  num('pointOpacity',       'Opacity',      'look',      0.02,  0.5,    0.01,  0.08),
   num('pointSize',          'Point size',   'look',      0.5,   4,      0.1,   1,      { unit: 'px' }),
   color('inkColor',         'Ink',          'look',      '#141413'),
   color('paperColor',       'Paper',        'look',      '#F4F2EC'),
