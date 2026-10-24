@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Effect, EffectContext, RenderSize } from '../types';
 import type { ParamId, Params } from '../../app/params';
 import { Attractors } from './Attractors';
+import { InkTrails } from './InkTrails';
 import { ParticleSim, type SimInputs } from './ParticleSim';
 import { POINTS_FRAG, POINTS_VERT } from './shaders/points.glsl';
 
@@ -44,13 +45,14 @@ const TUNE = {
 };
 
 /**
- * Ink effect, M3: GPU particle simulation drawn as faint points on paper.
+ * Ink effect: GPU particle simulation, density splat, trail feedback, ink-on-paper composite.
  *
- * step():   attractors wander on the CPU, then one simulation pass on the GPU (ParticleSim).
- * render(): clear to paper, draw the particles with "over" blending of the ink colour.
- *           With a single ink colour that is order independent and accumulates density
- *           exponentially (paper -> ink), so dense cores saturate gracefully.
- * renderParticles(target) is split out so M4 can draw into a density/trail target instead.
+ * step():   attractors wander on the CPU, one simulation pass on the GPU (ParticleSim), then
+ *           the particles are splatted additively into the density target (InkTrails).
+ * render(): if any steps ran since the last frame, fold density into the trail
+ *           (blurH + drift, blurV * fade + density), then composite to the screen.
+ *
+ * Passes per 60 Hz frame: sim, points -> density, blurH, blurV, composite.
  */
 export class InkEffect implements Effect {
   readonly id = 'ink';
@@ -64,7 +66,8 @@ export class InkEffect implements Effect {
   private beatUsed = false;
   private inputs: SimInputs;
 
-  private paper = new THREE.Color();
+  private trails = new InkTrails();
+  private stepsSinceRender = 0;
   private scene = new THREE.Scene();
   private camera = new THREE.Camera();
   private geometry = new THREE.BufferGeometry();
@@ -76,7 +79,6 @@ export class InkEffect implements Effect {
     uAspect: { value: 1 },
     uPointSize: { value: 1 },
     uOpacity: { value: 0.1 },
-    uInk: { value: new THREE.Color() },
     uRound: { value: false },
   };
 
@@ -96,7 +98,11 @@ export class InkEffect implements Effect {
       fragmentShader: POINTS_FRAG,
       uniforms: this.uniforms,
       transparent: true,
-      blending: THREE.NormalBlending,
+      // Plain additive: dst.r += src.r.
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
       depthTest: false,
       depthWrite: false,
     });
@@ -107,10 +113,14 @@ export class InkEffect implements Effect {
     this.scene.add(points);
   }
 
-  resize(size: Readonly<RenderSize>): void {
+  resize(size: Readonly<RenderSize>, renderer: THREE.WebGLRenderer): void {
     this.aspect = size.width / Math.max(1, size.height);
     this.dpr = size.dpr;
+    renderer.getDrawingBufferSize(this.bufferSize);
+    this.trails.resize(this.bufferSize.x, this.bufferSize.y);
+    this.stepsSinceRender = 0;
   }
+  private bufferSize = new THREE.Vector2();
 
   onParamChange(id: ParamId, params: Readonly<Params>): void {
     if (id !== 'particleCount') return;
@@ -143,6 +153,13 @@ export class InkEffect implements Effect {
     } else {
       this.sim.step(renderer, s);
     }
+
+    const density = this.trails.densityTarget;
+    if (density) {
+      this.trails.prepare(renderer);
+      this.renderParticles(renderer, params, density);
+      this.stepsSinceRender++;
+    }
   }
 
   /** Draw the particles into `target` (null = default framebuffer). Does not clear. */
@@ -152,11 +169,13 @@ export class InkEffect implements Effect {
     u.uStateB.value = this.sim.stateB;
     u.uSize.value = this.sim.size;
     u.uAspect.value = this.aspect;
-    u.uPointSize.value = params.pointSize * this.dpr;
-    u.uRound.value = u.uPointSize.value >= 3;
-    u.uOpacity.value = params.pointOpacity;
-    // Raw shader output is not colour-managed: feed sRGB values to match the swatch.
-    u.uInk.value.set(params.inkColor).convertLinearToSRGB();
+    const px = Math.max(1, params.pointSize * this.dpr);
+    u.uPointSize.value = px;
+    u.uRound.value = px >= 3;
+    // Constant ink per particle per CSS px^2: bigger points spread the same ink thinner,
+    // and the look does not change with dpr.
+    const area = (px / this.dpr) * (px / this.dpr);
+    u.uOpacity.value = params.pointOpacity / Math.max(area, 1e-3);
 
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
@@ -167,18 +186,21 @@ export class InkEffect implements Effect {
     renderer.autoClear = prevAutoClear;
   }
 
-  render({ renderer, params }: EffectContext): void {
+  render({ renderer, params, time }: EffectContext): void {
     this.beatUsed = false;
-    if (this.needsInit) return; // nothing simulated yet
-    this.paper.set(params.paperColor);
-    renderer.setClearColor(this.paper, 1);
-    renderer.setRenderTarget(null);
-    renderer.clear(true, false, false);
-    this.renderParticles(renderer, params, null);
+    if (this.stepsSinceRender > 0) {
+      this.trails.update(
+        renderer, params, this.stepsSinceRender, this.dpr, time,
+        this.attractors.positions, Math.round(params.emitters),
+      );
+      this.stepsSinceRender = 0;
+    }
+    this.trails.present(renderer, params, this.dpr);
   }
 
   dispose(): void {
     this.sim.dispose();
+    this.trails.dispose();
     this.geometry.dispose();
     this.material.dispose();
   }

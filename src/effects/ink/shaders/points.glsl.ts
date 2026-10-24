@@ -1,5 +1,5 @@
 /**
- * Particle draw. No vertex attributes: gl_VertexID indexes the state textures
+ * Particle draw into the density target (additive, single channel). No vertex attributes: gl_VertexID indexes the state textures
  * (row-major, width uSize), so the draw count alone decides how many particles render.
  */
 export const POINTS_VERT = /* glsl */ `
@@ -12,7 +12,7 @@ uniform sampler2D uStateB;
 uniform int   uSize;
 uniform float uAspect;
 uniform float uPointSize;   // device pixels
-uniform float uOpacity;
+uniform float uOpacity;     // additive ink per point, per device pixel
 
 out float vAlpha;
 
@@ -31,7 +31,6 @@ void main() {
 export const POINTS_FRAG = /* glsl */ `
 precision highp float;
 
-uniform vec3 uInk;
 uniform bool uRound;
 
 in float vAlpha;
@@ -44,6 +43,6 @@ void main() {
     float d = length(gl_PointCoord - 0.5);
     a *= 1.0 - smoothstep(0.35, 0.5, d);
   }
-  outColor = vec4(uInk, a);
+  outColor = vec4(a, 0.0, 0.0, 1.0);
 }
 `;
