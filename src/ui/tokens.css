@@ -1,0 +1,48 @@
+/* Design tokens. Dieter Rams meets Teenage Engineering: flat, warm, quiet, one accent. */
+:root {
+  /* Surfaces */
+  --c-panel: #ECEAE4;
+  --c-knob: #E2DFD8;
+  --c-pill: #F4F2EC;
+  --c-stage: #F4F2EC;
+
+  /* Lines */
+  --c-rule: #C9C6BE;
+  --c-track: #B8B5AD;
+
+  /* Text */
+  --c-ink: #2A2926;
+  --c-muted: #6B6963;
+  --c-faint: #9A978F;
+
+  /* Accent: ONLY active tab, playhead/seek fill, level meter, focus ring. */
+  --c-accent: #E8541E;
+
+  /* Type */
+  --f-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --fs-label: 12px;
+  --fs-section: 11px;
+  --fs-hint: 11px;
+  --fs-value: 12px;
+  --ls-section: 0.08em;
+
+  /* Geometry */
+  --panel-w: 320px;
+  --pad-x: 20px;
+  --hairline: 1px;
+  --track-h: 2px;
+  --thumb-w: 10px;
+  --thumb-h: 16px;
+  --radius-s: 1px;
+  --btn-h: 28px;
+  --field-w: 56px;
+  --knob: 36px;
+  --row-gap: 14px;
+
+  /* Focus */
+  --focus: 0 0 0 1px var(--c-accent);
+
+  /* Paper grain: desaturated fractal noise, tiled, ~3% opacity. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+}
