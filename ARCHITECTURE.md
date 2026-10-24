@@ -59,7 +59,7 @@ Audio is sampled once per display frame and shared by all fixed steps in that fr
 
 ```ts
 interface EffectContext {
-  audio: Readonly<AudioFrame>;   // bass, mid, high, level, beat, beatEnvelope, active
+  audio: Readonly<AudioFrame>;   // see Audio below
   time: number;                  // simulation clock, seconds
   dt: number;                    // 1/60 in step(), wall-clock delta in render()
   params: Readonly<Params>;
@@ -123,12 +123,56 @@ typing and `ctx.params.<id>` all follow automatically.
 
 ## Audio
 
-`setSource(kind, payload)` is typed per kind via `SourcePayloads`. File is implemented
-(HTMLAudioElement -> MediaElementSource -> Analyser -> destination). Mic, URL and tab
-capture throw `NotImplementedError` (M2). Live sources connect to the analyser only, never
-to the destination. `getFrame()` returns smoothed 0..1 bands (bass 20-250 Hz,
-mid 250-2000, high 2000-12000) with asymmetric rise/fall, RMS level, and a beat flag from
-bass onset over a running mean with a 150 ms refractory period.
+`setSource(kind, payload)` is typed per kind via `SourcePayloads`; `stop()` returns to idle.
+Switching source tears the previous one down (stop tracks, disconnect nodes, revoke object
+URLs). The AudioContext and a single AnalyserNode (fftSize 2048, smoothingTimeConstant 0)
+are created lazily on the first `setSource()` (a user gesture) and resumed on every play/start.
+
+| Source  | Input                                                        | Audible            | Transport          |
+|---------|--------------------------------------------------------------|--------------------|--------------------|
+| file    | `<audio>` (or `<video>` for video/* so MP4 uses its audio)   | yes, to destination | play/pause, seek   |
+| url     | `<audio crossOrigin="anonymous">`                            | yes                | play/pause, seek   |
+| mic     | `getUserMedia` with AEC/NS/AGC off -> MediaStreamSource      | no (feedback)      | "Live"             |
+| capture | `getDisplayMedia({video, audio})`, video tracks stopped      | no (tab already plays) | "Live"         |
+
+Failure handling: a link that fails to load (no CORS headers, 404, not audio) reports via the
+element `error` event; a link that plays pure digital zeros for 2 s (tainted element) reports
+"This host blocks cross-origin audio. Try the Capture tab." Streaming hosts (Spotify, YouTube...)
+are rejected up front. Capture with no audio track, or outside Chromium desktop, gets its own
+message; the audio track's `ended` event (user clicked "Stop sharing", mic unplugged) returns to idle.
+
+```ts
+interface AudioFrame {
+  bass: number; mid: number; high: number;   // smoothed, 0..1, after sensitivity
+  level: number;                             // normalised RMS, smoothed
+  peak: number;                              // peak-hold of level (0.8 s hold), for meters
+  beat: boolean;                             // true for exactly one frame per onset
+  beatStrength: number;                      // set on the beat frame, decays (tau 250 ms)
+  raw: { bass: number; mid: number; high: number };  // before rise/fall smoothing
+  playing: boolean;
+  time: number;                              // media time, or seconds since live start
+  duration: number;                          // media duration, 0 for live/unknown
+}
+```
+
+`FeatureExtractor` (analysis.ts), once per display frame while playing:
+
+1. Bands from the real sampleRate: bass 20-150 Hz, mid 150-2000, high 2000-12000. Bin powers
+   are averaged linearly and converted to dB above a -100 dBFS floor (a plain mean of dB values
+   would bury a narrow tone in a wide band).
+2. Per-band adaptive normaliser: running max with a 4 s half-life, floored at 50 dB above the
+   floor; the 30 dB window below the max maps to 0..1, so silence stays 0.
+3. Sensitivity (`bassSens` etc.), then asymmetric exponential smoothing with time constants
+   `smoothRise` / `smoothFall` (framerate independent). `raw` is the value before this step.
+4. Level: time-domain RMS in dBFS through the same kind of normaliser; peak hold 0.8 s, then
+   falls 0.6/s.
+5. Beats: spectral flux over 20-400 Hz on log(1 + 10|X|) magnitudes. Fire when flux >
+   mean + k * std of the last 1.5 s (k = 0.25 + 2.5 * `beatThreshold`, so 0.6 -> 1.75), total
+   region energy is rising (rejects note-offs), and 120 ms have passed since the last beat.
+   `engine.bpm` is a rolling median-interval tempo estimate (0 when unknown).
+
+When nothing is playing the bands, level and beatStrength decay to 0 with the fall constant.
+Add `?debug` to the URL to expose `engine`, `store` and `stage` on `window` in production builds.
 
 ## UI
 

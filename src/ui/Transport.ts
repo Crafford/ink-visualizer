@@ -32,15 +32,22 @@ export function createTransport(engine: AudioEngine, onFullscreen: () => void): 
 
   let lastPlaying: boolean | null = null;
   d.add(engine.on('state', (s) => {
-    if (s.playing !== lastPlaying) {
-      lastPlaying = s.playing;
-      playBtn.replaceChildren(svg(s.playing ? ICONS.pause : ICONS.play));
-      playBtn.setAttribute('aria-label', s.playing ? 'Pause' : 'Play');
+    const showPause = s.playing && !s.live;
+    if (showPause !== lastPlaying) {
+      lastPlaying = showPause;
+      playBtn.replaceChildren(svg(showPause ? ICONS.pause : ICONS.play));
+      playBtn.setAttribute('aria-label', showPause ? 'Pause' : 'Play');
     }
-    playBtn.disabled = s.source === null;
+    // Play/pause and the timeline only apply to file and link; live sources show "Live".
+    playBtn.disabled = s.source === null || s.live;
+    seek.hidden = s.live;
+    dur.hidden = s.live;
+    time.classList.toggle('is-live', s.live);
     seek.disabled = !s.seekable || !Number.isFinite(s.duration);
     dur.textContent = formatTime(s.duration);
-    if (!scrubbing) {
+    if (s.live) {
+      time.textContent = 'Live';
+    } else if (!scrubbing) {
       time.textContent = formatTime(s.currentTime);
       const p = Number.isFinite(s.duration) && s.duration > 0 ? s.currentTime / s.duration : 0;
       seek.value = String(p);

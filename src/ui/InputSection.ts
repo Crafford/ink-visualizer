@@ -1,4 +1,4 @@
-import type { AudioEngine } from '../audio/AudioEngine';
+import { AudioEngine, MSG } from '../audio/AudioEngine';
 import { h, Disposer, type Component } from './dom';
 import { createTabs } from './components/Tabs';
 import { createButton } from './components/Button';
@@ -69,32 +69,55 @@ export function createInputSection(engine: AudioEngine): Component {
   window.addEventListener('drop', onDrop);
   d.add(() => { window.removeEventListener('dragover', onDragOver); window.removeEventListener('drop', onDrop); });
 
-  // Mic
-  const mic = h('div', { class: 'input-pane' },
-    h('div', { class: 'input-row' },
-      createButton({ label: 'Enable microphone', primary: true, onClick: () => run(() => engine.setSource('mic', undefined)) }),
-    ),
-    h('p', { class: 'hint' }, 'Uses the default input device. Nothing is recorded.'),
-  );
+  // Live sources (mic, capture): one Start/Stop button plus a status line driven by engine state.
+  const livePane = (kind: 'mic' | 'capture', o: {
+    start: string; stop: string; idle: string; on: (label: string) => string; disabled?: string;
+  }) => {
+    const status = h('p', { class: 'hint', 'aria-live': 'polite' }, o.disabled ?? o.idle);
+    const btn = createButton({
+      label: o.start, primary: true,
+      onClick: () => run(async () => {
+        if (engine.state.source === kind) engine.stop();
+        else await engine.setSource(kind, undefined);
+      }),
+    });
+    btn.disabled = !!o.disabled;
+    d.add(engine.on('state', (s) => {
+      const active = s.source === kind;
+      btn.textContent = active ? o.stop : o.start;
+      status.textContent = o.disabled ?? (active ? o.on(s.label) : o.idle);
+      status.classList.toggle('is-on', active);
+    }));
+    return h('div', { class: 'input-pane' }, h('div', { class: 'input-row' }, btn), status);
+  };
+
+  const mic = livePane('mic', {
+    start: 'Start microphone', stop: 'Stop microphone',
+    idle: 'Uses the default input device. Nothing is recorded.',
+    on: (label) => `Listening: ${label}`,
+  });
 
   // Link
   const urlField = h('input', {
     class: 'text-field', type: 'url', placeholder: 'https://example.com/track.mp3', 'aria-label': 'Audio URL', spellcheck: 'false',
   });
-  const loadUrl = () => run(() => engine.setSource('url', urlField.value.trim()));
+  const loadUrl = () => run(async () => {
+    await engine.setSource('url', urlField.value.trim());
+    await engine.play();
+  });
   urlField.addEventListener('keydown', (e) => { if (e.key === 'Enter') void loadUrl(); });
   const link = h('div', { class: 'input-pane' },
     h('div', { class: 'input-row' }, urlField, createButton({ label: 'Load', primary: true, onClick: () => void loadUrl() })),
-    h('p', { class: 'hint' }, 'Direct audio file link. The host must allow cross-origin requests.'),
+    h('p', { class: 'hint' }, 'Direct .mp3/.m4a links only. Spotify, YouTube and other streaming links need the Capture tab.'),
   );
 
   // Capture
-  const capture = h('div', { class: 'input-pane' },
-    h('div', { class: 'input-row' },
-      createButton({ label: 'Capture tab audio', primary: true, onClick: () => run(() => engine.setSource('capture', undefined)) }),
-    ),
-    h('p', { class: 'hint' }, 'Chrome desktop only. Tick “Share tab audio” in the dialog.'),
-  );
+  const capture = livePane('capture', {
+    start: 'Start capture', stop: 'Stop capture',
+    idle: 'Pick a tab and tick \u201cShare tab audio\u201d in the Chrome dialog. Keep that tab playing.',
+    on: (label) => `Capturing: ${label}`,
+    disabled: AudioEngine.captureSupported ? undefined : MSG.captureUnsupported,
+  });
 
   const panes: Record<InputTab, HTMLElement> = { upload, mic, link, capture };
   const tabs = createTabs<InputTab>(TABS, 'upload', (id) => {

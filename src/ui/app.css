@@ -179,6 +179,7 @@ button, input { font: inherit; color: inherit; }
 .status:empty { display: none; }
 .status.is-error { color: var(--c-ink); }
 .status.is-error::before { content: '× '; font-family: var(--f-mono); }
+.hint.is-on { color: var(--c-ink); }
 .text-field {
   flex: 1; min-width: 0; height: var(--btn-h); padding: 0;
   border: 0; border-bottom: var(--hairline) solid var(--c-track); border-radius: 0;
@@ -223,6 +224,7 @@ button, input { font: inherit; color: inherit; }
 .icon-btn:disabled { color: var(--c-faint); cursor: default; }
 .t-time { font-size: var(--fs-value); line-height: 16px; min-width: 5ch; }
 .t-dur { color: var(--c-muted); }
+.t-time.is-live { color: var(--c-muted); text-transform: uppercase; letter-spacing: var(--ls-section); font-size: var(--fs-section); }
 .t-sep { width: 1px; height: 16px; background: var(--c-rule); }
 
 .seek {

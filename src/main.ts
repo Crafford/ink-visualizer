@@ -56,4 +56,5 @@ window.addEventListener('keydown', (e) => {
   void engine.toggle();
 });
 
-if (import.meta.env.DEV) Object.assign(window, { store, engine, stage });
+// Dev builds, or any build with ?debug, expose internals for the console and automated tests.
+if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) Object.assign(window, { store, engine, stage });
