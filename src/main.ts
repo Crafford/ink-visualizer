@@ -14,7 +14,7 @@ const store = new ParamStore({ mobile });
 const engine = new AudioEngine();
 
 // Audio response params flow into the engine; everything else is read by the effect per frame.
-const AUDIO_KEYS = ['bassSens', 'midSens', 'highSens', 'smoothRise', 'smoothFall', 'beatThreshold'] as const;
+const AUDIO_KEYS = ['bassSens', 'midSens', 'highSens', 'smoothRise', 'smoothFall'] as const;
 for (const k of AUDIO_KEYS) store.watch(k, (v) => engine.configure({ [k]: v }));
 
 const root = document.getElementById('app')!;

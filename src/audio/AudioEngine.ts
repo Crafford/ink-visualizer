@@ -6,7 +6,7 @@ import {
 } from './types';
 
 const DEFAULT_RESPONSE: AudioResponse = {
-  bassSens: 1, midSens: 1, highSens: 1, smoothRise: 0.02, smoothFall: 0.25, beatThreshold: 0.6,
+  bassSens: 1, midSens: 1, highSens: 1, smoothRise: 0.02, smoothFall: 0.25, beatThreshold: 0,
 };
 
 /** How long a link must play in pure digital silence before we call it a CORS block. */
