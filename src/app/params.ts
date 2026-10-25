@@ -87,7 +87,7 @@ export const PARAMS = [
   num('highSens',           'High',         'audio',     0,     6,      0.01,  3),
   num('smoothRise',         'Rise',         'audio',     0,     1,      0.01,  0.5,   { format: secs(2) }),
   num('smoothFall',         'Fall',         'audio',     0,     1,      0.01,  0.5,   { format: secs(2) }),
-  num('burstSize',          'Burst',        'audio',     0,     2,      0.01,  0.5),
+  num('burstSize',          'Burst',        'audio',     0,     2,      0.01,  1),
 ] as const satisfies readonly ParamDef[];
 
 export type AnyParamDef = (typeof PARAMS)[number];
