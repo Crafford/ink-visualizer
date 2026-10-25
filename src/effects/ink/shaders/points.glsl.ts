@@ -1,3 +1,4 @@
+import { NOISE_GLSL } from './noise.glsl';
 import { MAX_ATTRACTORS } from './sim.glsl';
 
 /**
@@ -8,7 +9,13 @@ import { MAX_ATTRACTORS } from './sim.glsl';
  * instead of a row of specks. Slow particles get a 1 device px segment (a point).
  *
  * Ink per particle is constant regardless of length: per-pixel ink = uInk / length.
- * Output: rgb = ink * absorbance of the particle's attractor colour (-ln colour), a = ink.
+ * Output: rgb = ink * absorbance of the particle's source colour (-ln colour), a = ink.
+ *
+ * Render-time audio response (moves ink in place, never moves the simulated particles):
+ *   kick:   radial expansion about the nearest source, follows beatStrength.
+ *   shiver: high-frequency curl displacement, follows beatStrength, wobbles on the real clock.
+ *   breath: radial scale about the nearest source, follows bass.
+ * Dormant particles (life < 0) are moved outside the clip volume.
  */
 export const POINTS_VERT = /* glsl */ `
 precision highp float;
@@ -20,30 +27,33 @@ uniform sampler2D uStateB;
 uniform int   uSize;
 uniform float uAspect;
 uniform vec2  uViewPx;      // drawing buffer size, device px
-uniform float uStepDt;      // one simulation step, seconds
+uniform float uStepDt;      // one simulation step, simulation seconds (x speed)
 uniform float uInk;         // ink per particle (device px units)
 uniform vec3  uAbsorb[${MAX_ATTRACTORS}];
 uniform vec2  uAttractors[${MAX_ATTRACTORS}];  // view space
 uniform int   uAttractorCount;
 uniform float uKick;        // beat kick: radial expansion about the nearest core (0 = none)
 uniform float uKickRadius;  // the kick fades out by this distance
+uniform float uShiver;      // shiver displacement amplitude (0 = none)
+uniform float uShiverScale; // shiver field frequency
+uniform float uRTime;       // real-time clock, seconds (not scaled by speed)
+uniform float uBreath;      // radial scale about the nearest source (bass)
 
 out vec4 vInk;
+
+${NOISE_GLSL}
 
 void main() {
   int id = gl_VertexID >> 1;
   ivec2 c = ivec2(id % uSize, id / uSize);
   vec4 a = texelFetch(uStateA, c, 0);
   vec4 b = texelFetch(uStateB, c, 0);
+  if (b.y < 0.0) { vInk = vec4(0.0); gl_Position = vec4(2.0, 2.0, 0.0, 1.0); return; }
   float t = b.x / max(b.y, 1e-3);
-  // Fade out over the last 20% of life; fade in over the first 50 ms so respawns do not pop
-  // (absolute, so beat-burst particles show almost at once).
-  float alpha = (1.0 - smoothstep(0.8, 1.0, t)) * smoothstep(0.0, 0.05, b.x);
+  // Fade out over the last 30% of life; fade in over the first 50 ms so births do not pop.
+  float alpha = (1.0 - smoothstep(0.7, 1.0, t)) * smoothstep(0.0, 0.05, b.x);
 
-  // Beat kick, render-time only: the structure around each core expands for a few frames
-  // and relaxes as beatStrength decays, without moving the simulated particles (so repeated
-  // beats do not scatter the ink into fog). The trails keep the imprint of the jump.
-  if (uKick > 0.0) {
+  if (uKick > 0.0 || uBreath > 0.0) {
     vec2 best = vec2(0.0);
     float bestD2 = 1e9;
     for (int i = 0; i < ${MAX_ATTRACTORS}; i++) {
@@ -52,8 +62,15 @@ void main() {
       float d2 = dot(d, d);
       if (d2 < bestD2) { bestD2 = d2; best = d; }
     }
-    float f = 1.0 - smoothstep(0.0, uKickRadius, sqrt(bestD2));
-    a.xy += best * uKick * f;
+    float dist = sqrt(bestD2);
+    a.xy += best * (uKick * (1.0 - smoothstep(0.0, uKickRadius, dist))
+                  + uBreath * (1.0 - smoothstep(0.0, 1.2, dist)));
+  }
+  // Shiver: every bit of ink wobbles where it is. The field changes fast on the real clock,
+  // so the displacement reverses within a beat instead of carrying ink anywhere.
+  if (uShiver > 0.0) {
+    vec2 q = a.xy * uShiverScale;
+    a.xy += curl2(vec3(q, uRTime * 7.0)) * uShiver;
   }
 
   // Segment in device px: from p - v*dt to p, at least 1 px long.

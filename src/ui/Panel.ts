@@ -8,7 +8,7 @@ import { createColorField } from './components/ColorField';
 import { createButton } from './components/Button';
 import { createInputSection } from './InputSection';
 
-/** Controls shown only when at least this many attractors are active. */
+/** Controls shown only when at least this many ink sources are active. */
 const MIN_EMITTERS: Partial<Record<string, number>> = { inkColor2: 2, inkColor3: 3 };
 
 export interface PanelActions {
@@ -69,7 +69,7 @@ export function createPanel(store: ParamStore, engine: AudioEngine, actions: Pan
       const c = controlFor(def, store);
       d.add(c.dispose);
       body.append(c.el);
-      // Per-attractor colours: only show the ones that are in use.
+      // Per-source colours: only show the ones that are in use.
       const need = MIN_EMITTERS[def.id];
       if (need) d.add(store.watch('emitters', (n) => { c.el.hidden = n < need; }));
     }

@@ -52,6 +52,13 @@ export const LOOK = {
   lineBlur: 0.6,
   /** Wash memory relative to line memory: washFade = 1 - (1 - trailFade) * washFadeRatio. */
   washFadeRatio: 0.22,
+  /** Wetness table [dry, wet]: dry = little halo, crisp edge; wet = wide soft bloom, drift.
+   *  Blur, wash gain, drift and line blur are multipliers; washFadeRatio replaces the base. */
+  wetWashBlur: [0.3, 1.2] as readonly [number, number],
+  wetWashGain: [0.5, 0.65] as readonly [number, number],
+  wetDrift: [0.15, 1] as readonly [number, number],
+  wetWashFadeRatio: [0.6, 0.25] as readonly [number, number],
+  wetLineBlur: [1.3, 2.6] as readonly [number, number],
   /** Pivot of the contrast S-curve, in ink coverage (0 paper .. 1 ink). */
   pivot: 0.42,
   /** Paper texture: +-amplitude around the paper colour, feature size in CSS px. */
@@ -61,12 +68,13 @@ export const LOOK = {
   washBeat: 1.2,
   washBlurBeat: 0.8,
   /** trailDrift (px per step) -> device px per step. */
-  driftGain: 4,
+  driftGain: 2,
   /** Line deposit gain = pointSize ^ pointSizeGain (darkness compensation for thicker lines). */
   pointSizeGain: 0.6,
 };
 
 const BLACK = new THREE.Color(0, 0, 0);
+const lerp = (r: readonly [number, number], t: number) => r[0] + (r[1] - r[0]) * t;
 
 /**
  * Density, trail feedback and composite for the ink effect.
@@ -82,6 +90,7 @@ const BLACK = new THREE.Color(0, 0, 0);
  * Panel mapping: trailFade = line memory (wash memory derived, longer), trailBlur = wash
  * spread per step, trailDrift = wash drift per step (x LOOK.driftGain), pointSize = line
  * thickness (line blur x pointSize, line deposit x pointSize^0.6 so darkness roughly holds).
+ * wetness scales wash blur, gain, drift and memory and the line blur (LOOK.wet* tables).
  *
  * Fade, blur and drift are applied per simulation step (pow(fade, n), sigma * sqrt(n),
  * drift * n), so the look does not depend on the display refresh rate.
@@ -204,9 +213,10 @@ export class InkTrails {
     const write = this.trails[1 - this.cur];
     const aspect = this.width / this.height;
     const rootSteps = Math.sqrt(steps);
-    const sigmaLine = this.look.lineBlur * params.pointSize * dpr * rootSteps;
-    const sigmaWash = params.trailBlur * (1 + beatStrength * this.look.washBlurBeat) * dpr * rootSteps;
-    const washFade = 1 - (1 - params.trailFade) * this.look.washFadeRatio;
+    const L = this.look, wet = params.wetness;
+    const sigmaLine = L.lineBlur * lerp(L.wetLineBlur, wet) * params.pointSize * dpr * rootSteps;
+    const sigmaWash = params.trailBlur * lerp(L.wetWashBlur, wet) * (1 + beatStrength * L.washBlurBeat) * dpr * rootSteps;
+    const washFade = 1 - (1 - params.trailFade) * lerp(L.wetWashFadeRatio, wet);
 
     const h = this.blurH.uniforms;
     h.uLine.value = read.textures[0];
@@ -215,7 +225,7 @@ export class InkTrails {
     h.uSigmaLine.value = sigmaLine;
     h.uSigmaWash.value = sigmaWash;
     h.uAspect.value = aspect;
-    h.uDrift.value = params.trailDrift * this.look.driftGain * dpr * steps;
+    h.uDrift.value = params.trailDrift * L.driftGain * lerp(L.wetDrift, wet) * dpr * steps;
     h.uTime.value = time;
     h.uAttractorCount.value = Math.max(1, Math.min(MAX_ATTRACTORS, attractorCount));
     for (let i = 0; i < MAX_ATTRACTORS; i++) {
@@ -259,7 +269,7 @@ export class InkTrails {
     c.uWash.value = this.trails[this.cur].textures[1];
     c.uContrast.value = params.contrast;
     c.uExposure.value = this.look.exposure;
-    c.uWashGain.value = this.look.wash * (1 + beatStrength * this.look.washBeat);
+    c.uWashGain.value = this.look.wash * lerp(this.look.wetWashGain, params.wetness) * (1 + beatStrength * this.look.washBeat);
     c.uWashMax.value = this.look.washMax;
     c.uPivot.value = this.look.pivot;
     c.uPaperTex.value = this.look.paperTex;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { FULLSCREEN_VERT, MAX_ATTRACTORS, SIM_FRAG } from './shaders/sim.glsl';
 
-/** Per-step inputs, already mapped from params + audio by the effect. */
+/** Per-step inputs, already mapped from params + audio by the effect. Times are simulation seconds. */
 export interface SimInputs {
   dt: number;
   time: number;
@@ -11,27 +11,31 @@ export interface SimInputs {
   noiseScale: number;
   noiseSpeed: number;
   turbulence: number;
-  pull: number;
-  swirl: number;
-  damping: number;
+  relax: number;
   maxSpeed: number;
   lifespan: number;
-  respawnChance: number;
-  burstChance: number;
-  coreRadius: number;
-  coreFraction: number;
-  jets: number;
-  jetSpeed: number;
-  jetWidth: number;
-  jetSpin: number;
-  calmRadius: number;
-  burstSpeed: number;
-  burstCurl: number;
-  burstLife: number;
-  burstRays: number;
-  beatSeed: number;
-  beatPush: number;
-  beatRadius: number;
+  bleedRate: number;
+  seepChance: number;
+  seepRadius: number;
+  seepSpeed: number;
+  seepBleed: number;
+  dropChance: number;
+  dropEmitter: number;
+  dropSeed: number;
+  dropStrength: number;
+  dropJitter: number;
+  dropRadius: readonly [number, number];
+  splat: number;
+  dropBleed: number;
+  dropLife: number;
+  satFraction: number;
+  satDist: readonly [number, number];
+  satRadius: number;
+  satBleed: number;
+  fibre: number;
+  feather: number;
+  featherFreq: number;
+  edgeNoise: number;
 }
 
 type FloatKind = 'float' | 'half';
@@ -39,8 +43,10 @@ type FloatKind = 'float' | 'half';
 /**
  * GPU particle state and the simulation pass.
  *
- * State lives in a ping-pong pair of 2-attachment (MRT) float render targets:
- *   textures[0] = pos.xy, vel.xy     textures[1] = age, life, seed, emitterIndex
+ * State lives in a ping-pong pair of 3-attachment (MRT) float render targets:
+ *   textures[0] = pos.xy, vel.xy
+ *   textures[1] = age, life (< 0 = dormant), seed, source index
+ *   textures[2] = bleed centre.xy, bleed reach, bleed angle
  * Texture side = ceil(sqrt(count)); texels past `count` simulate but are never drawn.
  * One fullscreen-triangle draw per step reads the current target, writes the other.
  */
@@ -60,6 +66,7 @@ export class ParticleSim {
   private uniforms = {
     uStateA: { value: null as THREE.Texture | null },
     uStateB: { value: null as THREE.Texture | null },
+    uStateC: { value: null as THREE.Texture | null },
     uDt: { value: 0 },
     uTime: { value: 0 },
     uFrame: { value: 0 },
@@ -70,27 +77,31 @@ export class ParticleSim {
     uNoiseScale: { value: 1 },
     uNoiseSpeed: { value: 0.1 },
     uTurbulence: { value: 0 },
-    uPull: { value: 0 },
-    uSwirl: { value: 0 },
-    uDamping: { value: 0 },
+    uRelax: { value: 1 },
     uMaxSpeed: { value: 1 },
     uLifespan: { value: 4 },
-    uRespawnChance: { value: 0 },
-    uBurstChance: { value: 0 },
-    uCoreRadius: { value: 0.03 },
-    uCoreFraction: { value: 0.3 },
-    uJets: { value: 5 },
-    uJetSpeed: { value: 0.2 },
-    uJetWidth: { value: 0.2 },
-    uJetSpin: { value: 0.1 },
-    uCalmRadius: { value: 0.2 },
-    uBurstSpeed: { value: 0.8 },
-    uBurstCurl: { value: 0.3 },
-    uBurstLife: { value: 1 },
-    uBurstRays: { value: 0 },
-    uBeatSeed: { value: 0 },
-    uBeatPush: { value: 0 },
-    uBeatRadius: { value: 0.8 },
+    uBleedRate: { value: 1 },
+    uSeepChance: { value: 0 },
+    uSeepRadius: { value: 0.02 },
+    uSeepSpeed: { value: 0 },
+    uSeepBleed: { value: 0 },
+    uDropChance: { value: 0 },
+    uDropEmitter: { value: -1 },
+    uDropSeed: { value: 0 },
+    uDropStrength: { value: 0.5 },
+    uDropJitter: { value: 0 },
+    uDropRadius: { value: new THREE.Vector2(0.03, 0.05) },
+    uSplat: { value: 0 },
+    uDropBleed: { value: 0 },
+    uDropLife: { value: 1 },
+    uSatFraction: { value: 0 },
+    uSatDist: { value: new THREE.Vector2(0.08, 0.25) },
+    uSatRadius: { value: 0.01 },
+    uSatBleed: { value: 1 },
+    uFibre: { value: 0 },
+    uFeather: { value: 0 },
+    uFeatherFreq: { value: 40 },
+    uEdgeNoise: { value: 0 },
   };
 
   constructor(renderer: THREE.WebGLRenderer, count: number) {
@@ -132,7 +143,7 @@ export class ParticleSim {
     this.disposeTargets();
     this.size = size;
     const opts: THREE.RenderTargetOptions = {
-      count: 2,
+      count: 3,
       type: this.floatKind === 'float' ? THREE.FloatType : THREE.HalfFloatType,
       format: THREE.RGBAFormat,
       minFilter: THREE.NearestFilter,
@@ -150,8 +161,9 @@ export class ParticleSim {
   /** Current state textures (read side). */
   get stateA(): THREE.Texture { return this.targets![this.cur].textures[0]; }
   get stateB(): THREE.Texture { return this.targets![this.cur].textures[1]; }
+  get stateC(): THREE.Texture { return this.targets![this.cur].textures[2]; }
 
-  /** Fill the state procedurally: particles around the attractors with staggered ages. */
+  /** Reset the state: every particle dormant. */
   init(renderer: THREE.WebGLRenderer, inputs: SimInputs): void {
     this.uniforms.uInit.value = true;
     this.run(renderer, inputs);
@@ -168,6 +180,7 @@ export class ParticleSim {
     const write = this.targets![1 - this.cur];
     u.uStateA.value = read.textures[0];
     u.uStateB.value = read.textures[1];
+    u.uStateC.value = read.textures[2];
     u.uDt.value = s.dt;
     u.uTime.value = s.time;
     u.uFrame.value = this.frame = (this.frame + 1) >>> 0;
@@ -177,27 +190,31 @@ export class ParticleSim {
     u.uNoiseScale.value = s.noiseScale;
     u.uNoiseSpeed.value = s.noiseSpeed;
     u.uTurbulence.value = s.turbulence;
-    u.uPull.value = s.pull;
-    u.uSwirl.value = s.swirl;
-    u.uDamping.value = s.damping;
+    u.uRelax.value = s.relax;
     u.uMaxSpeed.value = s.maxSpeed;
     u.uLifespan.value = s.lifespan;
-    u.uRespawnChance.value = s.respawnChance;
-    u.uBurstChance.value = s.burstChance;
-    u.uCoreRadius.value = s.coreRadius;
-    u.uCoreFraction.value = s.coreFraction;
-    u.uJets.value = s.jets;
-    u.uJetSpeed.value = s.jetSpeed;
-    u.uJetWidth.value = s.jetWidth;
-    u.uJetSpin.value = s.jetSpin;
-    u.uCalmRadius.value = s.calmRadius;
-    u.uBurstSpeed.value = s.burstSpeed;
-    u.uBurstCurl.value = s.burstCurl;
-    u.uBurstLife.value = s.burstLife;
-    u.uBurstRays.value = s.burstRays;
-    u.uBeatSeed.value = s.beatSeed >>> 0;
-    u.uBeatPush.value = s.beatPush;
-    u.uBeatRadius.value = s.beatRadius;
+    u.uBleedRate.value = s.bleedRate;
+    u.uSeepChance.value = s.seepChance;
+    u.uSeepRadius.value = s.seepRadius;
+    u.uSeepSpeed.value = s.seepSpeed;
+    u.uSeepBleed.value = s.seepBleed;
+    u.uDropChance.value = s.dropChance;
+    u.uDropEmitter.value = s.dropEmitter;
+    u.uDropSeed.value = s.dropSeed >>> 0;
+    u.uDropStrength.value = s.dropStrength;
+    u.uDropJitter.value = s.dropJitter;
+    u.uDropRadius.value.set(s.dropRadius[0], s.dropRadius[1]);
+    u.uSplat.value = s.splat;
+    u.uDropBleed.value = s.dropBleed;
+    u.uDropLife.value = s.dropLife;
+    u.uSatFraction.value = s.satFraction;
+    u.uSatDist.value.set(s.satDist[0], s.satDist[1]);
+    u.uSatRadius.value = s.satRadius;
+    u.uSatBleed.value = s.satBleed;
+    u.uFibre.value = s.fibre;
+    u.uFeather.value = s.feather;
+    u.uFeatherFreq.value = s.featherFreq;
+    u.uEdgeNoise.value = s.edgeNoise;
 
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;

@@ -109,38 +109,88 @@ typing and `ctx.params.<id>` all follow automatically.
 
 ## Ink effect
 
-1. Particle state in two RGBA32F ping-pong MRT textures (pos.xy, vel.xy | age, life, seed,
-   emitterIndex). sqrt(count) square, 200k desktop, 50k mobile (`defaultMobile`).
-2. Simulation pass (fullscreen triangle, `shaders/sim.glsl.ts`): curl noise at `turbulenceScale`,
-   spring + swirl toward the nearest of 1 to 3 wandering attractors (`Attractors.ts`, CPU),
-   `drag`, speed clamp. Births at an attractor: 25% stay in the core, the rest ride a few
-   slowly spinning jets. Respawn on age > life, at `emissionRate`, off-screen, or on a beat
-   (burst, see the audio table). All audio constants live in `TUNE` (InkEffect.ts), exposed
-   as `stage.effect.tune` with `?debug`.
+Metaphor: drops of ink from a dropper landing on art paper. A drop splatters, then bleeds into
+the paper and stops, feathering at the edges. Wetness turns dry card into wet watercolour paper.
+
+1. Particle state in three RGBA32F ping-pong MRT textures, sqrt(count) square, 200k desktop,
+   50k mobile (`defaultMobile`):
+   - A: pos.xy, vel.xy
+   - B: age, life (< 0 = dormant), seed, source index
+   - C: bleed centre.xy, bleed reach R, bleed angle (set at birth, see Bleed below)
+   Particles start dormant (culled in the draw pass) and return to dormant when age > life or
+   they leave the view, so the pool feeds both seep and drops.
+2. Simulation pass (fullscreen triangle, `shaders/sim.glsl.ts`), all in simulation seconds
+   (dt x `speed`):
+   - Seep: each dormant particle wakes with probability `emissionRate * 0.15 * (1 + 2 bass) * dt`
+     in a disc (r 0.02) at a random source with a slow outward velocity (0.03).
+   - Drop: on a beat, `burstSize * max(bs, 0.25) * 0.15` of all particles respawn at every source:
+     a dense disc (r 0.03..0.05 by strength, landing up to 0.1 from the source) with a radial
+     launch proportional to the distance from the centre, carrying ~`0.035 * (0.5 + bs)`, plus
+     3-7 satellite spatters (20% of the drop's particles, small discs stretched along their
+     direction, 0.08-0.25 from the centre, same colour). Life x 1.2. With no beat for 2 s
+     (real time), each source drips on its own every 1.4-3.4 s of sim time (strength 0.3-0.65,
+     `0.15 * emissionRate` of all particles), so the idle canvas still shows drops.
+   - Bleed: the medium velocity is `dir(angle + fibre) * bleedRate * R * f^2`, f = 1 - d / R,
+     d = distance from the bleed centre (C.xy), so the bleed slows and stops at R. R is set at
+     birth as `d0 * (1 + grow * g * m)`: the landing disc scales up as a whole (an additive
+     offset would hollow it into a ring); m varies with angle (low + high frequency noise,
+     lobed ragged edge); 8% of particles are fibre tendrils (g 1.4-2.8). The bleed angle is bent
+     by a static high-frequency noise field (`feather` 0.7 rad, frequency 45): paper fibres,
+     so the bleed front is ragged.
+   - Curl noise (two octaves) is added to the medium velocity: `turbulenceStrength * 0.035`
+     view half-heights/s x wetness influence x (1 + 1.5 mid).
+   - The particle velocity relaxes toward the medium at `6 * (0.25 + drag) * wetRelax` per second,
+     which is also what kills a splat launch (dry: ~0.1 s).
+   - Sources (`Attractors.ts`, CPU) wander at phase rate 0.4 x `speed` x (1 + bass): a full
+     traverse of the central 60% of the view takes 40-60 s.
+   All tuning lives in `TUNE` (InkEffect.ts), exposed as `stage.effect.tune` with `?debug`.
 3. Splat pass (`shaders/points.glsl.ts`): `gl.LINES`, two vertices per particle, no
    attributes (`gl_VertexID >> 1` indexes the state). Each particle draws the segment it
-   travelled in its last step (min 1 device px), so consecutive steps tile the path and fast
-   particles leave continuous strokes instead of specks. Ink per particle is constant
+   travelled in its last step (min 1 device px). Ink per particle is constant
    (per-pixel ink = ink / length). Additive into an RGBA16F density target:
-   rgb = ink * absorbance of the particle's attractor colour (-ln of its sRGB value), a = ink.
-   A render-time beat kick (radial expansion about the nearest core) is applied here.
+   rgb = ink * absorbance of the particle's source colour (-ln of its sRGB value), a = ink.
+   Render-time audio response (real clock, never moves the simulated particles, so ink is moved
+   in place, not carried away): kick, shiver, breath (see Audio mapping).
 4. Feedback (`InkTrails.ts`, `shaders/trail.glsl.ts`): two RGBA16F layers in one MRT
    ping-pong pair, same rgb/a layout as the density.
-   - line: fade `trailFade`, blur `0.6px * pointSize`, deposit x `pointSize^0.6` (thicker
-     strokes, roughly the same darkness; cores are not diluted by blur, so not fully linear).
-   - wash: longer memory (derived from `trailFade`), blur `trailBlur`, drift `trailDrift * 4`
-     px per step outward from the attractors (direction blended over all attractors, so there
-     is no seam between two cores) with a slow swirl.
-   Fade, blur and drift are applied per simulation step, so the look is refresh-rate independent.
-5. Composite: coverage from the a channels exactly as before (line + capped wash, contrast
+   - line: fade `trailFade`, blur `0.6px * pointSize * wetLineBlur`, deposit x `pointSize^0.6`.
+   - wash: longer memory (derived from `trailFade` and wetness), blur `trailBlur * wetWashBlur`,
+     drift `trailDrift * 2 * wetDrift` px per step outward from the sources (direction blended
+     over all sources) with a slow swirl.
+   Fade, blur and drift are applied per real-time step (not scaled by `speed`), so the look is
+   refresh-rate independent.
+5. Composite: coverage from the a channels (line + capped wash x `wetWashGain`, contrast
    S-curve). Ink colour = exp(-K), K = per-layer mean absorbance rgb / a, layers weighted by
-   coverage. Mixing in absorbance space multiplies colours (subtractive): indigo over oxblood
-   gives a dark violet-brown, and overlapping ink is denser, so darker. With all three colours
-   equal this is identical to the single-colour M4 composite. Result = mix(paper, ink colour,
-   coverage) + paper texture + grain (CSS-px cells; a light floor everywhere, strongest in the
-   midtones).
+   coverage, so overlapping inks mix subtractively. Result = mix(paper, ink colour, coverage) +
+   paper texture + grain.
 
-Per-attractor colours: `inkColor1..3`; the panel shows colour 2 and 3 only when `emitters` >= 2 / 3.
+Per-source colours: `inkColor1..3` (defaults #000000, #0091FF, #FF0000); the panel shows colour
+2 and 3 only when Sources (`emitters`) >= 2 / 3.
+
+### Wetness
+
+`wetness` (0..1, default 0.35) interpolates linearly between the dry and wet columns:
+
+| Quantity | Dry (0) | Wet (1) | Where |
+|----------|---------|---------|-------|
+| velocity relaxation (drag) | x 2.6 | x 0.8 | sim: splat dies within ~0.1 s when dry, carries further when wet |
+| curl influence | x 0.15 | x 0.7 | sim: dry ink stays put, wet ink drifts and swirls |
+| bleed reach | x 1 | x 3 | sim: short bleed vs bloom |
+| bleed rate (1/s) | 2.2 | 0.7 | sim: wet bleed is slower and keeps going |
+| lifespan | x 1 | x 1.6 | sim: wet ink lingers in motion |
+| ink per particle | x 1 | x 0.7 | draw: watercolour is more translucent |
+| line blur | x 1.3 | x 2.6 | trails: crisp feathered edge vs soft pigment |
+| wash blur | x 0.3 | x 1.2 | trails: little halo vs wide soft bloom |
+| wash gain | x 0.5 | x 0.65 | composite |
+| wash drift | x 0.15 | x 1 | trails |
+| wash memory ratio | 0.6 | 0.25 | trails: washFade = 1 - (1 - trailFade) * ratio (lower = longer) |
+
+### Speed
+
+`speed` (0.1..2, default 1) scales the simulation clock: sim dt (motion, bleed, splat decay,
+ageing, seep probability, curl field evolution, idle drips) and the source wander. It does not
+scale trail fade, blur and drift, or the render-time audio response, which stay real-time so
+the ink stays responsive to music at any speed.
 
 ### Audio mapping
 
@@ -150,13 +200,13 @@ Bands arrive already multiplied by their sensitivity slider (0 = off, 1 = nomina
 
 | Input | Drives | Mapping |
 |-------|--------|---------|
-| beat (one frame) | burst births | `burstSize * max(bs, 0.25) * 0.4` of all particles respawn at a core and ride 5 fresh rays per attractor (new directions every beat), speed `1.6 * (0.3..1.2)`, 8% tangential, life x 0.5 |
-| bs | push on live particles | outward acceleration `bs * 0.8 * (0.5 + burstSize)`, falloff `(1 - smoothstep(0, 0.45, d))^2` from the nearest core |
-| bs | kick (render only) | positions drawn expanded about the nearest core by `bs * 0.35 * (0.5 + burstSize)`, fading out by d = 0.8; relaxes as bs decays, so beats do not scatter the ink into fog |
-| bs | shiver | turbulence x `(1 + 0.6 bs)` |
+| beat (one frame) | drop | `burstSize * max(bs, 0.25) * 0.15` of all particles respawn as a splat + satellites at every source (above) |
+| bs | kick (render only) | positions drawn expanded about the nearest source by `bs * 0.25 * (0.5 + burstSize)`, fading out by d = 0.8 |
+| bs | shiver (render only) | curl displacement `bs * 0.005 * (0.5 + burstSize)` at 3.5x the curl frequency, field evolving at 7x real time: all ink, including ink that has bled and stopped, wobbles in place |
 | bs | wash swell | wash gain x `(1 + 1.2 bs)`, wash blur x `(1 + 0.8 bs)` (`trailFade` untouched) |
-| bass | emission, attractor speed | respawn rate x `(1 + 2 bass)`, wander speed x `(1 + 1.5 bass)` |
-| mid | turbulence | x `(1 + 1.5 mid)` |
+| bass | breathing (render only) | radial scale about the nearest source `1 + 0.015 bass`, fading out by d = 1.2 |
+| bass | seep, wander | seep rate x `(1 + 2 bass)`, wander speed x `(1 + bass)` |
+| mid | turbulence | curl velocity x `(1 + 1.5 mid)` |
 | high | noise scale, ink | `turbulenceScale` x `(1 + high)`, ink per particle x `(1 + 0.5 high)` |
 
 The panel's level meter has a beat blip (accent dot, 200 ms fade, brightness from the beat

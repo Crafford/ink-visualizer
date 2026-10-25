@@ -16,10 +16,11 @@ function mulberry32(seed: number): () => number {
 interface Path { w: Float32Array; ph: Float32Array }
 
 /**
- * Wandering attractors on the CPU (three points are not worth a GPU pass).
- * Each one follows its own low-frequency quasi-periodic noise: two incommensurate sines
- * per axis with seeded frequencies and phases. The dominant half period is 16-24 s, so a
- * full traverse of the central 60% of the view takes about that long at speed 1.
+ * Wandering ink sources (the dropper positions) on the CPU: three points are not worth a
+ * GPU pass. Each one follows its own low-frequency quasi-periodic noise: two incommensurate
+ * sines per axis with seeded frequencies and phases. The dominant half period is 16-24 s
+ * of wander phase; the effect advances the phase at TUNE.wander (0.4) x Speed, so at the
+ * defaults a full traverse of the central 60% of the view takes 40-60 s.
  */
 export class Attractors {
   /** Uniform value, length MAX_ATTRACTORS; entries past `count` are stale and ignored. */
@@ -40,7 +41,7 @@ export class Attractors {
   }
 
   /**
-   * Advance the shared wander clock. speed 1 = nominal; audio scales it.
+   * Advance the shared wander clock. speed 1 = nominal; the effect folds in Speed and audio.
    * Integrating a phase (instead of time * speed) keeps paths continuous when speed changes.
    */
   update(dt: number, speed: number, aspect: number): void {
