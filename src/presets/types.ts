@@ -1,29 +1,34 @@
 import type { Params } from '../app/params';
 
-/** A saved look. Values are validated by ParamStore.patch on load, so stale presets degrade safely. */
+/** Preset schema version. Bump with a migration in presets/store.ts when the shape changes. */
+export const PRESET_SCHEMA = 1;
+
+/**
+ * A saved look. `params` holds REAL values (the store's units, never the panel's 0..10),
+ * keyed by param id, so retuning a display range or curve never breaks a preset.
+ * On load, unknown ids are ignored and missing or invalid ones fall back to the defaults.
+ */
 export interface Preset {
   /** Schema version for migrations. */
-  version: 1;
+  version: typeof PRESET_SCHEMA;
   id: string;
   name: string;
   /** Effect id from effects/registry.ts. */
   effect: string;
-  /** Missing keys fall back to defaults; unknown keys are ignored. */
   params: Partial<Params>;
   createdAt: string;
   builtIn?: boolean;
 }
 
-/** Storage backend (localStorage first, file import/export later). */
-export interface PresetRepository {
-  list(): Promise<Preset[]>;
-  get(id: string): Promise<Preset | undefined>;
-  save(preset: Preset): Promise<void>;
-  remove(id: string): Promise<void>;
+/** localStorage document under PRESET_STORAGE_KEY. */
+export interface PresetStorage {
+  schema: typeof PRESET_SCHEMA;
+  presets: Preset[];
 }
 
-/** JSON file shape for import/export. */
+/** JSON file shape for export/import. */
 export interface PresetFile {
-  format: 'ink-visualizer/preset';
+  format: 'visualizer/presets';
+  schema: typeof PRESET_SCHEMA;
   presets: Preset[];
 }

@@ -7,6 +7,8 @@ import { createKnob } from './components/Knob';
 import { createColorField } from './components/ColorField';
 import { createButton } from './components/Button';
 import { createInputSection } from './InputSection';
+import { createPresetsSection } from './PresetsSection';
+import type { PresetBank } from '../presets/store';
 
 /** Controls shown only when at least this many ink sources are active. */
 const MIN_EMITTERS: Partial<Record<string, number>> = { inkColor2: 2, inkColor3: 3 };
@@ -25,13 +27,24 @@ function controlFor(def: ParamDef, store: ParamStore): Component {
  * The control panel. Param sections are generated from the schema; Input and Output
  * have bespoke bodies. Layout-agnostic: the host decides whether it is a sidebar or a sheet.
  */
-export function createPanel(store: ParamStore, engine: AudioEngine, actions: PanelActions): Component {
+export function createPanel(
+  store: ParamStore, engine: AudioEngine, presets: PresetBank, actions: PanelActions,
+): Component {
   const d = new Disposer();
   const el = h('aside', { class: 'panel', 'aria-label': 'Controls' });
 
   el.append(h('header', { class: 'panel-head' },
-    h('span', { class: 'wordmark' }, 'Ink'),
-    h('span', { class: 'mono panel-version' }, 'v0.1'),
+    h('span', { class: 'wordmark' }, 'Visualizer',
+      // Effect name; becomes the effect selector later.
+      h('span', { class: 'effect-tag', title: 'Effect' }, 'Ink')),
+    h('span', { class: 'mono panel-version' }, 'v0.2'),
+  ));
+
+  const presetSection = createPresetsSection(store, presets);
+  d.add(presetSection.dispose);
+  el.append(h('section', { class: 'section section-presets', 'aria-labelledby': 'sec-presets' },
+    h('h2', { class: 'section-label', id: 'sec-presets' }, 'Presets'),
+    h('div', { class: 'section-body' }, presetSection.el),
   ));
 
   const bySection = new Map<SectionId, ParamDef[]>();
@@ -57,7 +70,6 @@ export function createPanel(store: ParamStore, engine: AudioEngine, actions: Pan
       body.append(h('div', { class: 'btn-row' },
         createButton({ label: 'Fullscreen', onClick: actions.fullscreen }),
         createButton({ label: 'Screenshot', onClick: actions.screenshot }),
-        createButton({ label: 'Reset', onClick: () => store.reset(), title: 'Reset all parameters to defaults' }),
       ));
     }
 

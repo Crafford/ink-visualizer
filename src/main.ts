@@ -6,12 +6,14 @@ import { AudioEngine } from './audio/AudioEngine';
 import { EFFECTS, DEFAULT_EFFECT } from './effects/registry';
 import { createPanel } from './ui/Panel';
 import { createTransport } from './ui/Transport';
+import { PresetBank } from './presets/store';
 import { h } from './ui/dom';
 
 const mobile = matchMedia('(pointer: coarse)').matches;
 
 const store = new ParamStore({ mobile });
 const engine = new AudioEngine();
+const presets = new PresetBank({ mobile });
 
 // Audio response params flow into the engine; everything else is read by the effect per frame.
 const AUDIO_KEYS = ['bassSens', 'midSens', 'highSens', 'smoothRise', 'smoothFall'] as const;
@@ -27,15 +29,21 @@ const toggleFullscreen = () => {
   else void stageEl.requestFullscreen?.();
 };
 
+/** Local time as YYYYMMDD-HHMMSS. */
+const stamp = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
 const screenshot = async () => {
   if (!stage) return;
   const blob = await stage.screenshot();
-  const a = h('a', { href: URL.createObjectURL(blob), download: `ink-${new Date().toISOString().replace(/[:.]/g, '-')}.png` });
+  const a = h('a', { href: URL.createObjectURL(blob), download: `ink-${stamp(new Date())}.png` });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 
-const panel = createPanel(store, engine, { fullscreen: toggleFullscreen, screenshot: () => void screenshot() });
+const panel = createPanel(store, engine, presets, { fullscreen: toggleFullscreen, screenshot: () => void screenshot() });
 const transport = createTransport(engine, toggleFullscreen);
 stageEl.append(transport.el);
 root.append(h('div', { class: 'shell' }, panel.el, stageEl));
@@ -57,4 +65,4 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Dev builds, or any build with ?debug, expose internals for the console and automated tests.
-if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) Object.assign(window, { store, engine, stage });
+if (import.meta.env.DEV || new URLSearchParams(location.search).has('debug')) Object.assign(window, { store, engine, stage, presets });

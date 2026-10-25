@@ -10,7 +10,7 @@ body {
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
-button, input { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 .mono { font-family: var(--f-mono); }
 .sr-only {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
@@ -50,6 +50,13 @@ button, input { font: inherit; color: inherit; }
 .wordmark { font-size: 15px; letter-spacing: -0.01em; display: inline-flex; align-items: center; gap: 8px; }
 .wordmark::before { content: ''; width: 8px; height: 8px; background: var(--c-ink); }
 .panel-version { font-size: 11px; color: var(--c-muted); }
+/* Effect name next to the app title (an effect selector later). */
+.effect-tag {
+  margin-left: 2px; padding: 0 5px;
+  border: var(--hairline) solid var(--c-rule); border-radius: var(--radius-s);
+  font: 10px/16px var(--f-mono); letter-spacing: var(--ls-section); text-transform: uppercase;
+  color: var(--c-muted);
+}
 
 .section { border-top: var(--hairline) solid var(--c-rule); padding: 14px var(--pad-x) 18px; }
 .section-label {
@@ -165,7 +172,29 @@ button, input { font: inherit; color: inherit; }
 .btn-primary { border-color: var(--c-ink); }
 .btn-primary:hover { border-color: var(--c-ink); background: rgba(42, 41, 38, 0.04); }
 .btn:disabled { color: var(--c-faint); cursor: default; }
-.btn-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.btn-s { height: 24px; padding: 0 8px; font-size: var(--fs-hint); }
+
+/* Presets */
+.presets { display: flex; flex-direction: column; gap: 10px; }
+.preset-row { display: flex; gap: 8px; }
+.select {
+  -webkit-appearance: none; appearance: none;
+  flex: 1; min-width: 0; height: var(--btn-h); padding: 0 26px 0 8px;
+  border: var(--hairline) solid var(--c-rule); border-radius: var(--radius-s);
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%236B6963'/%3E%3C/svg%3E") no-repeat right 9px center;
+  font: var(--fs-value)/16px var(--f-mono); color: var(--c-ink);
+  text-overflow: ellipsis; cursor: pointer;
+}
+.select:hover { border-color: var(--c-faint); }
+.select:focus-visible { outline: none; border-color: var(--c-accent); }
+.preset-actions { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.preset-actions .spacer { flex: 1; }
+.preset-actions .text-field { height: 24px; }
+.preset-confirm {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-hint); color: var(--c-ink);
+}
 
 /* Input section */
 .input-section { display: flex; flex-direction: column; gap: 12px; }

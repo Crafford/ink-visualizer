@@ -25,11 +25,14 @@ src/
     tokens.css, app.css   design tokens and component styles
     dom.ts                h(), Component, Disposer
     Panel.ts              builds sections and controls from PARAMS
+    PresetsSection.ts     preset select, Reset (reload preset), Save/Delete inline, Export/Import
     InputSection.ts       source tabs, status, level meter
     Transport.ts          floating pill: play/pause, time, seek, fullscreen
     components/           Slider, NumberField, Knob, ColorField, Tabs, Button, LevelMeter
   presets/
-    types.ts              Preset, PresetRepository, PresetFile (types only in M1)
+    types.ts              Preset, PresetStorage, PresetFile, PRESET_SCHEMA
+    store.ts              PresetBank: built-in Default (from the schema), user presets in
+                          localStorage, JSON export/import with validation
 ```
 
 Dependency direction: `ui -> app, audio`; `app/stage -> effects, audio, app/store`;
@@ -95,6 +98,7 @@ interface NumberParamDef<Id extends string = string> {
   min: number; max: number; step: number; default: number;
   defaultMobile?: number; unit?: string; format?: (v: number) => string;
   control?: 'slider' | 'knob';
+  display?: { scale: 'norm10'; curve?: 'linear' | 'pow' | 'log'; exponent?: number; pole?: number };
 }
 interface ColorParamDef<Id extends string = string> {
   kind: 'color'; id: Id; label: string; section: SectionId; default: string; control?: 'color';
@@ -106,6 +110,30 @@ type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<I
 literal types. `Params` (the value bag) and `ParamId` are derived from it. Adding a
 parameter is one line in `PARAMS`; the panel control, store validation, reset, preset
 typing and `ctx.params.<id>` all follow automatically.
+
+### Panel scale (0..10)
+
+Params with `display: { scale: 'norm10' }` show 0..10 with one decimal on the panel, like a
+hardware knob. The store, the effect and presets always hold the real value; only the
+controls convert (`uiScale(def)` in params.ts: range, step, text, `toUi`, `fromUi`). Slider,
+knob, value field and keyboard all go through it, so the mapping is in one place. Typing
+into the value field takes a 0..10 number (clamped); arrows nudge 0.1 (Shift 1.0) from the
+shown value; the hover title shows the real value. The real `step` of norm10 params is at
+most 1/100 of the range so every 0.1 display step lands on a distinct real value.
+
+Curves (t = display / 10):
+
+| Curve | Real value | Used by |
+|-------|-----------|---------|
+| linear (default) | `min + (max - min) t` | all norm10 params except Persistence |
+| log, pole p | `p + sign * exp(lerp(log abs(min - p), log abs(max - p), t^exponent))` | Persistence (`trailFade`, pole 1) |
+| pow | `min + (max - min) t^exponent` | none yet |
+
+Persistence: the trail length goes as 1 / (1 - fade) (6.7 steps at 0.85, 100 at 0.99), so
+log(1 - fade) is linear in the display: each 0.1 multiplies the trail length by the same
+factor (1.028). The default 0.92 sits at 2.3.
+
+Real units stay for Count (k), Lifespan (s), Speed (x), Sources and the colours.
 
 ## Ink effect
 
@@ -267,12 +295,39 @@ Add `?debug` to the URL to expose `engine`, `store` and `stage` on `window` in p
 
 ## UI
 
-Panel and transport are plain functions returning `{ el, dispose }`. Layout lives only in
+Panel and transport are plain functions returning `{ el, dispose }`. The header reads
+"Visualizer" with the active effect ("Ink") as a small tag next to it. Layout lives only in
 CSS (`.shell` grid: 320px panel, canvas fills the rest), so the panel can become a bottom
 sheet under 768px without code changes. The accent colour is reserved for the active tab,
 seek fill, level meter and focus ring.
 
+## Presets
+
+`PresetBank` (presets/store.ts). The built-in "Default" is generated from the schema
+(`defaultParams`, env-aware). User presets live in localStorage under
+`visualizer.presets.v1` as `{ schema: 1, presets: Preset[] }`, each preset
+`{ version, id, name, effect, params, createdAt }` with `params` as REAL values keyed by param
+id. Loading resolves a preset over the defaults: unknown ids are ignored, missing or
+invalid values come from the defaults, and the store clamps and snaps. Save overwrites a
+user preset of the same name; "Default" is reserved. Storage failures fall back to memory.
+
+Panel: select (Default + user presets), Reset (reload the selected preset), Save (inline
+name field), Delete (user presets only, inline confirm), Export (the selected preset as
+`preset-<name>.json`, `{ format: 'visualizer/presets', schema: 1, presets: [...] }`) and
+Import (validates the format and values, adds every valid preset with a de-duplicated name,
+then selects and loads the first). The page always starts on Default.
+
+## Output
+
+Screenshot: the next rendered frame is read with `canvas.toBlob` in the same task as the
+draw (no preserveDrawingBuffer), at the drawing-buffer size (CSS size x dpr, dpr capped at
+2), composited on the paper colour; saved as `ink-YYYYMMDD-HHMMSS.png` (local time).
+Fullscreen targets the stage container: the panel is outside it and hides, the transport
+pill is inside it and stays; the ResizeObserver reallocates the trail targets (cleared).
+
 ## Milestones
 
 M0/M1 architecture, scaffold, panel shell. M2 GPU ink effect, mic/link/capture.
-M3 presets (localStorage + JSON file). M4 performance tiers, mobile sheet. M5 polish.
+M3-M5b ink effect, trails, audio response. M6 0..10 panel scale, presets (localStorage +
+JSON file), output checks, "Visualizer" title. Next: effect selector, performance tiers,
+mobile sheet.
