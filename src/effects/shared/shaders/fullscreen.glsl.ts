@@ -1,6 +1,3 @@
-/** Max sources; the uniform arrays are fixed-size, uAttractorCount picks how many are live. */
-export const MAX_ATTRACTORS = 3;
-
 /**
  * Fullscreen triangle from gl_VertexID: no vertex buffer at all.
  * Shared by every full-target pass (simulation, trail, composite).

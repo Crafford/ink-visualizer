@@ -2,11 +2,10 @@ import * as THREE from 'three';
 import type { Effect, EffectContext, EffectFactory, RenderSize } from '../types';
 import type { AudioFrame } from '../../audio/types';
 import type { InkParams } from './params';
-import { Attractors } from '../shared/Attractors';
+import { Attractors, MAX_ATTRACTORS } from './Attractors';
 import { InkTrails } from './InkTrails';
 import { ParticleSim, type SimInputs } from './ParticleSim';
 import { POINTS_FRAG, POINTS_VERT } from './shaders/points.glsl';
-import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 
 type Range = readonly [number, number];
 const lerp = (r: Range, t: number) => r[0] + (r[1] - r[0]) * t;
@@ -186,7 +185,7 @@ export class InkEffect implements Effect<InkParams> {
     this.aspect = size.width / Math.max(1, size.height);
     this.dpr = size.dpr;
     renderer.getDrawingBufferSize(this.bufferSize);
-    this.trails.resize(this.bufferSize.x, this.bufferSize.y, this.dpr);
+    this.trails.resize(this.bufferSize.x, this.bufferSize.y);
     this.stepsSinceRender = 0;
   }
   private bufferSize = new THREE.Vector2();
@@ -268,7 +267,7 @@ export class InkEffect implements Effect<InkParams> {
       this.sim.step(renderer, s);
     }
 
-    const density = this.trails.densityTarget(params.pointSize);
+    const density = this.trails.densityTarget;
     if (density) {
       this.trails.prepare(renderer);
       this.renderParticles(renderer, params, density, audio, time);
@@ -288,13 +287,10 @@ export class InkEffect implements Effect<InkParams> {
     u.uStateB.value = this.sim.stateB;
     u.uSize.value = this.sim.size;
     u.uAspect.value = this.aspect;
-    // Splat target size (the half-res density for sub-pixel Sizes); ink per texel x texel area.
-    const tgtScale = target ? this.trails.densityInkScale(target) : 1;
-    if (target) u.uViewPx.value.set(target.width, target.height);
-    else u.uViewPx.value.copy(this.bufferSize);
+    u.uViewPx.value.copy(this.bufferSize);
     u.uStepDt.value = this.inputs.dt;
     // Constant ink per particle per CSS px^2, so the look does not change with dpr.
-    u.uInk.value = tgtScale * params.pointOpacity * this.dpr * this.dpr * lerp(T.wetInk, params.wetness) * (1 + T.highInk * high);
+    u.uInk.value = params.pointOpacity * this.dpr * this.dpr * lerp(T.wetInk, params.wetness) * (1 + T.highInk * high);
     this.updateAbsorb(params);
     u.uAttractorCount.value = Math.max(1, Math.min(MAX_ATTRACTORS, Math.round(params.emitters)));
     u.uKick.value = bs * T.kick * (0.5 + params.burstSize);

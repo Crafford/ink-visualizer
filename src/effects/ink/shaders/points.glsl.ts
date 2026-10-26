@@ -1,5 +1,5 @@
 import { NOISE_GLSL } from '../../shared/shaders/noise.glsl';
-import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
+import { MAX_ATTRACTORS } from '../Attractors';
 
 /**
  * Particle splat into the density target, drawn as gl.LINES: two vertices per particle,

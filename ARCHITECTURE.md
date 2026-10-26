@@ -21,15 +21,15 @@ src/
   effects/
     types.ts              Effect contract, EffectEntry
     registry.ts           EFFECTS: { id, label, params, sections, create, linked? }[] (Ink, Smoke)
-    shared/               Attractors (wandering sources), PingPongState (float MRT ping-pong particle
-                          state + sim pass), subpixel (Size < 0.5 px density pre-filter),
-                          FullscreenPass, shaders/ (noise + curl + hash, fullscreen triangle +
-                          MAX_ATTRACTORS, two-layer blur header)
+    shared/               generic GPU utilities only: PingPongState (float MRT ping-pong state +
+                          one fullscreen pass), FullscreenPass, shaders/ (simplex noise with
+                          gradient, curl2, pcg3d hash; fullscreen triangle)
     ink/                  ink effect: params.ts (INK_PARAMS, sections), InkEffect (TUNE, audio
-                          mapping), ParticleSim, InkTrails (density/trail/composite), shaders/
-    smoke/                smoke effect: params.ts (SMOKE_PARAMS, mode-linked colours, Auto mode),
-                          SmokeEffect (TUNE, ring cadence, audio mapping, splat), SmokeTrails (trail, light/dark
-                          composite), shaders/
+                          mapping), Attractors (wandering sources, MAX_ATTRACTORS), ParticleSim,
+                          InkTrails (density/trail/composite), shaders/ (sim, points, trail, blur)
+    smoke/                smoke effect: params.ts (SMOKE_PARAMS, sections), SmokeEffect (TUNE,
+                          strand emission, audio mapping, strand draw), SmokeLight (light buffer,
+                          colour-ramp composite), shaders/ (sim, draw, image)
   ui/
     tokens.css, app.css   design tokens and component styles
     dom.ts                h(), Component, Disposer
@@ -60,7 +60,7 @@ rAF tick (Loop)
             pending screenshot -> canvas.toBlob (same task, no preserveDrawingBuffer)
 
 UI input -> store.set(id, v) -> sanitize (clamp, snap, hex, toggle value) -> listeners
-            -> effect entry linked(id) (e.g. Smoke Mode / Background swap default colours; not during preset load)
+            -> effect entry linked(id) if the effect has one (none does at present; not during preset load)
   - controls repaint themselves (store.watch)
   - audio response keys -> engine.configure()
   - effect.onParamChange?(id) for expensive changes (e.g. particleCount realloc)
@@ -108,6 +108,15 @@ between frames: read them, never keep references. A new effect is a folder with 
 `params.ts` (its PARAMS and sections) and the effect class, plus one entry in `registry.ts`;
 each effect types its params as `AppParams & ValuesOf<typeof ITS_PARAMS>`.
 
+**Each effect has its own machinery.** An effect's simulation, particle state layout, shaders
+and rendering live in its own folder and an effect never imports from another effect's folder.
+The only shared layer is the effect contract, the audio frame, the param / panel / preset
+system and genuinely generic utilities in `effects/shared/` (PingPongState, FullscreenPass,
+noise / hash GLSL, the fullscreen triangle). Anything shaped by one effect's model (Ink's
+wandering Attractors, its line/wash trail and blur) lives in that effect's folder. (M9 moved
+Attractors and the blur header into `ink/`, deleted the sub-pixel density layer and rebuilt
+Smoke from scratch on this rule.)
+
 Switching effect (panel header selector, `setEffect(id)` in main.ts): the store saves the
 outgoing effect's values and loads the incoming effect's last values (defaults the first
 time; app params are untouched), then the stage disposes the old effect and creates the new
@@ -136,13 +145,14 @@ interface ToggleParamDef<Id extends string = string, V extends string = string> 
 type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<Id> | ToggleParamDef<Id>;
 ```
 
-`APP_PARAMS` (params.ts: bassSens, midSens, highSens, smoothRise, smoothFall, burstSize) and
+`APP_PARAMS` (params.ts: bassSens, midSens, highSens, smoothRise, smoothFall, burstSize; panel
+labels Bass, Mid, High, Attack, Release, Surge, renamed in M9 with the ids kept so presets
+survive) and
 each effect's `INK_PARAMS` / `SMOKE_PARAMS` are `const` arrays built with the `num(...)`,
 `color(...)` and `toggle(...)` helpers, so ids stay literal types; `ValuesOf<typeof X>` gives
 the value bag. Adding a parameter is one line in the effect's list; the panel control, store
-validation, reset, presets and `ctx.params.<id>` follow automatically. Effects may reuse ids
-with the same meaning (Count, Emission, Lifespan, Speed, Turbulence, Swirl, Drag, Sources,
-Contrast, Grain); values are kept per effect.
+validation, reset, presets and `ctx.params.<id>` follow automatically. Values are kept per
+effect; Smoke's ids are all prefixed `smoke` so they never collide with Ink's.
 
 ### Panel scale (0..10)
 
@@ -158,15 +168,15 @@ Curves (t = display / 10):
 
 | Curve | Real value | Used by |
 |-------|-----------|---------|
-| linear (default) | `min + (max - min) t` | all norm10 params except Persistence |
-| log, pole p | `p + sign * exp(lerp(log abs(min - p), log abs(max - p), t^exponent))` | Persistence (`trailFade`, pole 1) |
+| linear (default) | `min + (max - min) t` | all norm10 params except Persistence and Swirl |
+| log, pole p | `p + sign * exp(lerp(log abs(min - p), log abs(max - p), t^exponent))` | Persistence (`trailFade`, pole 1), Smoke Swirl (`smokeSwirl`, pole 0: a frequency, so each 0.1 scales the curl size by the same factor) |
 | pow | `min + (max - min) t^exponent` | none yet |
 
 Persistence: the trail length goes as 1 / (1 - fade) (6.7 steps at 0.85, 100 at 0.99), so
 log(1 - fade) is linear in the display: each 0.1 multiplies the trail length by the same
 factor (1.028). The default 0.92 sits at 2.3.
 
-Real units stay for Count (k), Lifespan (s), Speed (x), Sources and the colours.
+Real units stay for Count / Detail (k), Lifespan (s), Speed (x), Sources and the colours.
 
 ## Ink effect
 
@@ -202,7 +212,7 @@ the paper and stops, feathering at the edges. Wetness turns dry card into wet wa
      view half-heights/s x wetness influence x (1 + 1.5 mid).
    - The particle velocity relaxes toward the medium at `6 * (0.25 + drag) * wetRelax` per second,
      which is also what kills a splat launch (dry: ~0.1 s).
-   - Sources (`shared/Attractors.ts`, CPU) wander at phase rate 0.4 x `speed` x (1 + bass): a full
+   - Sources (`ink/Attractors.ts`, CPU) wander at phase rate 0.4 x `speed` x (1 + bass): a full
      traverse of the central 60% of the view takes 40-60 s.
    All tuning lives in `TUNE` (InkEffect.ts), exposed as `stage.effect.tune` with `?debug`.
 3. Splat pass (`shaders/points.glsl.ts`): `gl.LINES`, two vertices per particle, no
@@ -225,12 +235,14 @@ the paper and stops, feathering at the edges. Wetness turns dry card into wet wa
    coverage, so overlapping inks mix subtractively. Result = mix(paper, ink colour, coverage) +
    paper texture + grain.
 
-Shared with Smoke (`effects/shared/`): Attractors, PingPongState (ParticleSim maps SimInputs
-onto the uniforms and runs it), FullscreenPass, noise/curl/hash GLSL, fullscreen triangle and
-the blur header. These were moved, not changed: the Ink shaders are textually identical and
-a 10 s fake-clock still matches the pre-M7 build (mean abs diff 0.004 / 255, the same as two
-runs of the old build). M8 routes Ink's density through `shared/subpixel.ts` (Size < 0.5 px only); at the
-default Size the 10 s fake-clock still matches M7 (mean abs diff 0.004 / 255).
+Ink uses the generic `effects/shared/` utilities (PingPongState: ParticleSim maps SimInputs
+onto the uniforms and runs it; FullscreenPass; noise/curl/hash GLSL; fullscreen triangle). Its
+Attractors and blur header live in `ink/`. M9 removed the M8 sub-pixel density layer: Ink is
+back to the M7 density/trail code (full-resolution density, exact texelFetch). Size keeps its
+0.25..4 range and default 0.5 (display 0.7); below 0.5 particles are drawn exactly as at 0.5
+and above (1 device px segments) with the line blur x Size and line deposit x Size^0.6, so a
+smaller Size is just thinner, lighter strokes. The Ink shaders are textually identical to M7
+and the default 10 s fake-clock still matches the M8 build (see Milestones for the number).
 
 Per-source colours: `inkColor1..3` (defaults #000000, #0091FF, #FF0000); the panel shows colour
 2 and 3 only when Sources (`emitters`) >= 2 / 3.
@@ -282,95 +294,125 @@ strength) and the `engine.bpm` estimate, from the engine's `beat` event, for tun
 
 ## Smoke effect
 
-Metaphor: smoke rings blown from 1-3 slowly wandering sources (the ink Attractors, shifted
-down: y x 0.7 - 0.32). Every particle belongs to a vortex ring: a beat puff, or one of the
-small rings the steady stream is made of. No drops, bleed or wetness. Tuning in `TUNE`
-(SmokeEffect.ts) and `SMOKE_LOOK` (SmokeTrails.ts). State: shared PingPongState, 4 attachments:
-A pos.xy vel.xy; B age, life (< 0 dormant), seed, source (+ 4 = puff); C ring origin.xy,
-theta (angle around the ring), ring seed; D phi0 (tube angle at birth), rho (distance from the
-tube core in tube radii), R0, v0.
+Metaphor: cigarette smoke in still air, backlit on black. A thin glassy thread rises from an
+almost invisible source, widens into smooth translucent sheets, and the sheets fold into a few
+big curls near the top and dissolve. Built from scratch in M9 with its own machinery
+(nothing from `ink/`): its own particle state layout and simulation, a strand renderer, its own
+light buffer and composite. Tuning lives in `TUNE` (SmokeEffect.ts, `stage.effect.tune` with
+?debug) and `SMOKE_LOOK` (SmokeLight.ts).
 
-1. Ring model (`shaders/sim.glsl.ts`), analytic in the particle's age t, so a ring travels as
-   one object. A torus in 3D seen from the front: axis tilted sideways by alpha (per ring, hashed
-   from its seed: +-25 deg puff, +-10 deg stream) and toward the viewer by beta (50-70 deg), so
-   it reads as a fat oval moving up and slightly toward us.
+### Strands (why it is smooth without blur)
 
-   | Quantity | Formula | Constants |
-   |----------|---------|-----------|
-   | slowing | slow = 1 - exp(-t / tau), speed v0 exp(-t / tau) | tau = 0.9 / (0.25 + Drag): 1.2 s at Drag 0.5 |
-   | centre | origin + axis v0 tau slow + up riseV (t - tau slow) | riseV = Rise x 0.6 / (0.25 + Drag) |
-   | ring radius | R0 (1 + 1.5 slow) (1 + wobble) | R0 puff 0.075..0.1 by beat strength, stream 0.045 (x 0.85-1.15) |
-   | tube radius | R0 lerp(0.45, 1.2, slow) | gaussian cross-section, rho ~ Rayleigh(sigma 0.55), clamped at 2.2 sigma |
-   | roll | phi = phi0 + omega tau slow, omega = 0.8 v0 / R0 / (1 + 2 rho^2) x (0.9..1.1 per particle) | outside of the tube forward, inside back; the core turns fastest |
-   | position | centre + (R + rho r cos phi) radial(theta) + rho r sin phi axis, projected to xy | |
-   | wobble | 0.06 (0.7 sin(2 pi t / P1 + a) cos 2 theta + 0.3 sin(2 pi t / P2 + b) cos theta), P 2-4 s | slow, smooth outline; no high-frequency terms |
-   | launch | puff v0 = 1.1 (0.5 + strength), stream v0 = 0.3 (x 0.8-1.2) | |
+Particles are organised as **strands** (streaklines). Particle i is slot `i % M` of strand
+`i / M` (M = `strandLen` = 128; strands = round(Detail / 128), 2344 at 300k). Every strand has a
+fixed spawn point on the source and emits its slots in order, one every `lifespan / M` s, so
+slot k + 1 is always the particle born just after slot k at the same place. The draw pass
+connects consecutive slots, so each strand is a continuous line from the source however far the
+flow stretches it: no dots, no shot noise, no feedback trail and no image blur. A slot is
+reborn after exactly one lifespan.
 
-   On top of the ring each particle carries a free displacement D = pos - ringPos(age), advanced
-   by curl noise (frequency Swirl x 1.2, velocity Turbulence x 0.12 x (1 + 1.5 mid); the field
-   rises with the smoke). Influence = smoothstep(0, 1.2 s, t) x lerp(0.25, 1, dissolve),
-   dissolve = smoothstep(0.45 Tr, Tr, t), ring life Tr 3.2 s (puff) / 1.8 s (stream); the two
-   finer octaves only come in with dissolve, and dissolved smoke spreads sideways (Rise x 0.5
-   1/s): the ring holds together, slows, widens and thickens, then breaks into haze.
-2. Stream: each source emits a small ring every 0.4-0.8 s / (0.5 + Emission) (CPU cadence);
-   dormant particles wake into it with probability Emission x 0.15 x (1 + 2 bass) x interval /
-   sources, so the supply still scales with Emission. A chain of soft rings merges into a column.
-3. Beat = puff: `burstSize * max(bs, 0.25) * 0.15 / sources` of all particles respawn per source
-   on a ring at that source (life x 0.6). Many particles per ring (about 12k per source at
-   250k, Burst 1, bs 0.8) keep the tube smooth.
-4. Splat (`shaders/points.glsl.ts`): gl.POINTS of size 1 (not ink's 1 px line segments: a 1 px
-   segment rasterises or not depending on its sub-pixel position and direction, which varied
-   smoothly around a ring and serrated its edge), each dithered by a fresh +-1 texel
-   (triangular) offset every step so consecutive steps carry independent shot noise, additive
-   into an MRT density target: line deposit and wash deposit. rgb = ink x the source's colour vector (absorbance on light paper,
-   the colour itself in dark mode), a = ink. Ink per particle = Density x 4 x size gain x tube
-   weight 2 exp(-rho^2 / 2 sigma^2) (dense tube core, soft edge) x cooling (1 - age/life)^1.6,
-   x 8 overall; puffs x 0.55 and at once, stream x 0.4 fading in over 0.6 s. The wash deposit is
-   x 0.5 while the ring is intact (1 once dissolved), so a travelling ring leaves little wake.
-   Shiver and breath as ink (render only); the kick is 0.04 (ink 0.25): the puff ring is the beat,
-   and a large render-time kick smeared rings into radial streaks.
-5. Trails (`SmokeTrails`): line layer fade 0.75/step, blur hypot(lerp(0.5, 3, Softness),
-   0.6 x max(0, Size - 1)) CSS px; wash fade 0.975/step, blur `lerp(0.6, 3.5, haze)`, drifting up
-   0.35 CSS px/step with a slow sway. Both deposits go through the sub-pixel pre-filter (below).
-   Beat swell on the wash as ink. A change of the resolved mode clears the trails.
-6. Composite: Light = ink's subtractive composite (wash gain `lerp(0.1, 0.8, haze)`, cap 0.55,
-   contrast S-curve, paper texture). Dark = additive light: per channel E = line.rgb + wash.rgb x
-   washGain, light = contrast(1 - exp(-E)), result = background + (1 - background) x light.
-   Grain as ink in both.
+- Emission phase (CPU): advances `M dt / lifespan` slots per step; the slots born in a step
+  are picked in integers (`uFirst`, `uNum`) so none is ever skipped (a float phase skipped
+  slots and left a notch across the column).
+- A slot born part-way through a step is integrated over the rest of the step with the same
+  physics, so consecutive slots stay evenly spaced (a plain sub-step offset left 20 % spacing
+  jitter, i.e. light bands across all strands).
+- Spawn: strands sit on a ring (radius fraction 0.75..1 of `source.width`, angle and radius from
+  independent hash channels) in x and z, so the column is a tube wall: projected, it is
+  brightest along its edges where the sheet is seen edge-on, which gives the sheets clean edges.
 
-Mode (`toggle`, Auto | Light | Dark, default Auto): Auto renders Light when the background's
-luminance (Rec. 709 weights on the hex values) is > 0.5, Dark otherwise, re-resolved whenever
-Background changes. Explicit Light / Dark set the background to that mode's default (#F7F7F5 /
-#24231E). In every case each smoke colour still at the other resolved mode's default is swapped
-to this one's (light: #00BBFF #EC008C #FFF200; dark: #E8E8E8 #9FB8D0 #D0A090); custom colours
-stay; in Auto the background is never changed by the link. Presets apply values without it.
+### State (PingPongState, three RGBA32F attachments, `shaders/sim.glsl.ts`)
 
-Swirl (`turbulenceScale`) range 0.2..2.67 (the old 0..10 scale's 6.5 is the new 10; the real
-default 0.58 now shows 1.5). Ink keeps 0.2..4.
+- A: pos.xyz (view units: y -1..1, x -aspect..aspect, z depth), age (s)
+- B: buoyant velocity u.xyz, born flag
+- C: unused, boost (surge share at birth), unused (strand seed), birth intensity
 
-### Size and sub-pixel particles (both effects)
+Particles are 3D and projected orthographically (z dropped).
 
-Size (`pointSize`, 0.25..4 px, 0..10 display) in both effects. Particles are always rasterised
-at 1 px. Smoke: ink per particle x size below 1 px (a 1 px point carrying less), x size^0.6
-above, where the line blur widens instead (default 0.25 = display 0). Ink keeps its line
-deposit x size^0.6 and line blur x size (min lowered from 0.5 to 0.25; its default 0.5 now
-shows 0.7).
+### Motion (laminar to turbulent column)
 
-Below 0.5 px (`shared/subpixel.ts`, `DensityTargets`) particles splat into a low-resolution
-density target, 300 CSS px tall (at most half the drawing buffer: 1/2 res for a 600 px view,
-1/3 for 900 px; the particle count does not grow with the screen, so the filter is
-screen-relative), ink per texel x the texel area so total ink is conserved, and the trail pass
-reads it through a pre-filter that also upsamples: 4 x 4 bilinear taps `spread` low-res texels
-apart, weights (1 3 3 1) per axis, i.e. the binomial 5 x 5 kernel at spread 1. Spread ramps
-from 0 (plain bilinear upsample) at Size 0.5 to 1 at 0.25, so at the minimum a lone particle
-is a soft smudge and only accumulated density reads. (M8 used a fixed half-res target: at
-1440 x 900 the shot noise of a travelling ring still showed as a fine serration.) At 0.5 and
-above (Ink's default) the full-res target is used and read with the old exact texelFetch; the
-half-res taps only run while the half target was written since the last trail update. Going
-from 0.5 to 0.49 is a small step (full res to bilinear low res), not a ramp.
+Per step: `p += (u + couple * air + spread) dt`.
 
-Audio: bass -> stream supply x (1 + 2 bass) and wander x (1 + bass); mid -> turbulence x (1 + 1.5 mid);
-high -> curl frequency x (1 + high), ink x (1 + 0.5 high); beat -> puff ring, kick, shiver, wash swell.
+| Term | Formula | Constants (TUNE) |
+|------|---------|------------------|
+| buoyancy (own velocity u) | `du.y = (buoy (1 + lift smoothstep(0, 1, h)) (1 - cool smoothstep(0.5, 1, age / life)) - drag u.y) dt` | buoy = Rise x 1.0, lift 0.35, cool 0.85; launch v0 0.1 |
+| drag | `drag = lerp(0.25, 3.25, Resistance)` 1/s; terminal rise = buoy / drag | default 1.75 /s, rise 0.23 view units/s |
+| coupling | `couple = drag / (drag + 0.6)`: low Resistance shoots up and stretches, high follows every curl and hangs | 0.74 at default |
+| curl turbulence | 3D curl of three simplex potentials (two octaves, second at 2.07x, weight 0.15), x influence `smoothstep(0.04 onset, onset, h)^2` | amplitude `lerp(0.01, 0.3, Turbulence)`, onset `lerp(1.6, 0.35, Turbulence)` view units |
+| curl field | frequency = Swirl (1 / view units); depth frequency x `zScale` 0.3 (chain rule keeps it divergence free) so strands at different depths fold together as a sheet; the field rises at 0.7 x terminal speed and evolves along z at 0.1 /s, so structures rise with the smoke | |
+| breeze | `x += Breeze x 0.25 x wind(t) x smoothstep(-0.05, 1.2, h) x (1 + 0.3 sin(2.3 h - 0.31 t))`, `wind = 0.25 + 0.6 sin(0.043 t + 0.7) + 0.4 sin(0.11 t + 2.1)` (slow, mostly one-sided) + beat gust | |
+| spread | each strand drifts outward along its spawn direction: `0.06 x radius fraction x smoothstep(0.15, 1.0, h)`; the column widens with height | |
+
+h = height above the source. The curl is ~0 at the source (straight glassy thread) and grows
+with height (waving, folding sheets, curls); Turbulence moves the breakup lower and makes it
+stronger, Swirl sets the curl size (low = big smooth folds like the 01 reference, high = fine
+wisps like 02).
+
+Source: `TUNE.source = { kind: 'point', width: 0.004, x: 0, y: -0.84 }` (8 % from the bottom).
+Only 'point' exists; `width` is the real spawn radius, so a wide source (smoke machine, fire)
+is a new `kind` / setting, not a rebuild.
+
+### Drawing (`shaders/draw.glsl.ts`, `SmokeLight.ts`)
+
+Once per display frame (not per step) into a float light buffer (RGBA32F when
+EXT_float_blend, else 16F) cleared each frame, additive:
+
+- Each particle draws the piece of its strand to the next slot as up to 3 Catmull-Rom
+  sub-segments through slots k-1..k+2 (straight when the piece is under 4 px), skipped at the
+  strand head (the slot after the newest is the oldest). Six vertices per sub-segment, no
+  attributes (`gl_VertexID`).
+- Each sub-segment is a quad: the segment widened to `max(Size x dpr, 1)` + 1 px and extended
+  1 px at both ends; the fragment box-filters it (coverage across `clamp(W/2 + 0.5 - |d|)`,
+  along the same at both ends), so pieces join seamlessly and edges do not serrate.
+- Light per pixel = `energy x gain x fade / (max(pieceLen, 1) x W x (1 + (pieceLen / stretch)^2))`:
+  a piece carries fixed light spread along its length (stretched smoke thins), and a piece
+  longer than `stretch` (0.04 view units) has torn and fades out (no straight lines across
+  gaps when fast smoke overtakes slow smoke).
+- `energy = Brightness x 0.5 x (300k / count) x (bufferHeight / 900)^2 x sqrt(Size)`: Detail
+  changes smoothness, not brightness; the look holds at any resolution and dpr; thin
+  filaments are a little dimmer, thick ones spread their light.
+- `gain` = birth intensity = `Amount x 2 x (1 + 0.4 bass) x (1 + 4 surge)`.
+- `fade` = `smoothstep(0, 0.25 x mix(1, 0.5, boost), h)^2 x (1 - smoothstep(0.6, 1, age / life))`:
+  the smoke appears from nothing over the first ~12 % of the view, a surge shows sooner; the
+  top dissolves over the last 40 % of life. Interpolated along each piece (no steps).
+
+Composite (`shaders/image.glsl.ts`): `a = 1 - exp(-0.8 log2(1 + light))` (log-compressed, so
+the thread, which carries every strand in a few pixels, and the sheets above both read), colour
+ramp `mix(#7F93A6, #F2F4F5, smoothstep(0.12, 0.9, a))` (thin = cool blue-grey, dense = near
+white), `result = #0A0A0B + (ramp - background) x a`, +-1 LSB triangular dither against banding.
+Background and ramp are fixed (not in the panel).
+
+### Params (section `smoke` "Smoke", section `smokeLook` "Look")
+
+| Param | id | Real range | Default real | Default shown | Display |
+|-------|----|-----------|--------------|---------------|---------|
+| Amount | smokeAmount | 0..1 | 0.5 | 5.0 | n10 linear (light per particle = smoke given off) |
+| Rise | smokeRise | 0..1 | 0.4 | 4.0 | n10 linear (buoyancy) |
+| Lifespan | smokeLifespan | 2..15 s | 9 s | 9.0s | real seconds |
+| Resistance | smokeResistance | 0..1 | 0.5 | 5.0 | n10 linear (drag) |
+| Turbulence | smokeTurbulence | 0..1 | 0.3 | 3.0 | n10 linear |
+| Swirl | smokeSwirl | 0.6..9 | 1.6 | 3.6 | n10 log (curl frequency) |
+| Breeze | smokeBreeze | 0..1 | 0.2 | 2.0 | n10 linear |
+| Brightness | smokeBrightness | 0..2 | 1 | 5.0 | n10 linear |
+| Size | smokeSize | 0.25..4 px | 1 px | 2.0 | n10 linear (filament width) |
+| Detail | smokeDetail | 50k..600k | 300k (mobile 100k) | 300k | real, rounded to whole strands |
+
+Turbulence 3 / Swirl 3.6 is the 01 look; Turbulence 7 / Swirl 7 (real 0.7 / 4.0) approaches 02.
+Detail reallocates the state and restarts the smoke (clock, emission phase, field).
+
+### Audio mapping
+
+| Input | Drives | Mapping |
+|-------|--------|---------|
+| beat (Surge = `burstSize`) | surge packet | envelope target = max(target, bs), decays tau 0.35 s; envelope follows with attack 0.25 s (a smooth ~0.5 s bump: the smoke near the source is slow, so a faster attack becomes a hard edge in the column). surge = envelope x Surge. Birth intensity x (1 + 4 surge), launch speed x (1 + 1.5 surge), source width x (1 + 2 surge), fade-in height x mix(1, 0.5, surge): a denser, brighter packet forms at the base and travels up. No rings, nothing radial. |
+| beat, bs >= 0.6 | sideways breath | gust += alternating sign x 0.12 x bs x Surge (view units/s), decays tau 1.5 s, added to the breeze |
+| bass | base breathing | birth intensity x (1 + 0.4 bass); boost (shorter fade-in) + 0.3 bass |
+| mid | turbulence | curl amplitude x (1 + 0.6 mid), breakup height / (1 + 0.4 mid) |
+| high | upper wisps | a third curl octave (3.3x frequency, the finest the strands resolve) at 0.03 x high x influence^2 |
+
+Bands arrive multiplied by their sensitivity (display 5.0 = 3x), so at the default audio
+settings the response is clearly visible (2 Hz beats: a livelier, lower breakup and packets
+rising up the column).
 
 ## Audio
 
@@ -430,7 +472,7 @@ Add `?debug` to the URL to expose `engine`, `store` and `stage` on `window` in p
 Panel and transport are plain functions returning `{ el, dispose }`. The header reads
 "Visualizer" followed by the effect selector (a small mono segmented control: INK | SMOKE,
 arrow keys move) and the version. Section order: Presets, Input, the effect's sections
-(Ink: Particles, Trails, Look; Smoke: Plume, Look), Audio response, Output. Layout lives only in
+(Ink: Particles, Trails, Look; Smoke: Smoke, Look), Audio response, Output. Layout lives only in
 CSS (`.shell` grid: 320px panel, canvas fills the rest), so the panel can become a bottom
 sheet under 768px without code changes. The accent colour is reserved for the active tab,
 seek fill, level meter and focus ring.
@@ -469,5 +511,8 @@ M0/M1 architecture, scaffold, panel shell. M2 GPU ink effect, mic/link/capture.
 M3-M5b ink effect, trails, audio response. M6 0..10 panel scale, presets (localStorage +
 JSON file), output checks, "Visualizer" title. M7 effect selector, per-effect params and presets,
 shared effect infrastructure, Smoke effect (light paper / dark). M8 smoke rings (analytic
-vortex-ring model), Swirl cap, Mode Auto | Light | Dark, Size + sub-pixel pre-filter. Next: performance tiers,
-mobile sheet.
+vortex-ring model), Swirl cap, Mode Auto | Light | Dark, Size + sub-pixel pre-filter. M9 Smoke rebuilt
+from scratch with its own machinery (streakline strands, laminar-to-turbulent buoyant column,
+additive light, surge packets), sub-pixel layer removed, per-effect machinery rule, audio labels
+Attack / Release / Surge; Ink default 10 s still vs the M8 build: mean abs diff 0.005 / 255 (two M8 runs: 0.004).
+Next: performance tiers, mobile sheet.

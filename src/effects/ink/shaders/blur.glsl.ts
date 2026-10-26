@@ -1,5 +1,5 @@
 /**
- * Two-layer separable blur header shared by the trail passes (ink, smoke): uniforms
+ * Two-layer separable blur header of the ink trail passes: uniforms
  * uLine / uWash / uTexel / uSigmaLine / uSigmaWash, MRT outputs outLine / outWash, and
  * blur9 (9 taps, +-2 sigma) / blur5 (5 taps, +-1.5 sigma), both sampled with bilinear
  * filtering so they stay smooth for any sigma.

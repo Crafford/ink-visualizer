@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PingPongState } from '../shared/PingPongState';
-import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
+import { MAX_ATTRACTORS } from './Attractors';
 import { SIM_FRAG } from './shaders/sim.glsl';
 
 /** Per-step inputs, already mapped from params + audio by the effect. Times are simulation seconds. */

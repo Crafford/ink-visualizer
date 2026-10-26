@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { MAX_ATTRACTORS } from './shaders/fullscreen.glsl';
+
+/** Max sources; the uniform arrays are fixed-size, uAttractorCount picks how many are live. */
+export const MAX_ATTRACTORS = 3;
 
 /** Deterministic PRNG so each attractor keeps its own path between reloads. */
 function mulberry32(seed: number): () => number {

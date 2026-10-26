@@ -1,6 +1,5 @@
-import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
-import { DENSITY_PREFILTER_GLSL } from '../../shared/subpixel';
-import { BLUR_COMMON } from '../../shared/shaders/blur.glsl';
+import { MAX_ATTRACTORS } from '../Attractors';
+import { BLUR_COMMON } from './blur.glsl';
 
 /**
  * Trail feedback, two separable passes at drawing-buffer resolution, two RGBA layers
@@ -65,13 +64,12 @@ void main() {
 export const BLUR_V_FRAG = /* glsl */ `
 ${BLUR_COMMON}
 uniform sampler2D uDensity;
-uniform sampler2D uDensityHalf;  // Size < 0.5 px splats here (shared/subpixel.ts)
 uniform vec2  uFade;     // line, wash fade for this update (already pow(fade, steps))
 uniform float uLineGain; // deposit gain of the line layer (point size compensation)
-${DENSITY_PREFILTER_GLSL}
+
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
-  vec4 d = densityAt(uDensity, uDensityHalf, gl_FragCoord.xy);  // + sub-pixel Size pre-filter
+  vec4 d = texelFetch(uDensity, ivec2(gl_FragCoord.xy), 0);
   outLine = blur5(uLine, uv, vec2(0.0, 1.0), uSigmaLine) * uFade.x + d * uLineGain;
   outWash = blur9(uWash, uv, vec2(0.0, 1.0), uSigmaWash) * uFade.y + d;
 }
