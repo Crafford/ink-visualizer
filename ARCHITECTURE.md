@@ -301,7 +301,7 @@ tube core in tube radii), R0, v0.
    | centre | origin + axis v0 tau slow + up riseV (t - tau slow) | riseV = Rise x 0.6 / (0.25 + Drag) |
    | ring radius | R0 (1 + 1.5 slow) (1 + wobble) | R0 puff 0.075..0.1 by beat strength, stream 0.045 (x 0.85-1.15) |
    | tube radius | R0 lerp(0.45, 1.2, slow) | gaussian cross-section, rho ~ Rayleigh(sigma 0.55), clamped at 2.2 sigma |
-   | roll | phi = phi0 + omega tau slow, omega = 0.8 v0 / R0 / (1 + 2 rho^2) | outside of the tube forward, inside back; the core turns fastest |
+   | roll | phi = phi0 + omega tau slow, omega = 0.8 v0 / R0 / (1 + 2 rho^2) x (0.9..1.1 per particle) | outside of the tube forward, inside back; the core turns fastest |
    | position | centre + (R + rho r cos phi) radial(theta) + rho r sin phi axis, projected to xy | |
    | wobble | 0.06 (0.7 sin(2 pi t / P1 + a) cos 2 theta + 0.3 sin(2 pi t / P2 + b) cos theta), P 2-4 s | slow, smooth outline; no high-frequency terms |
    | launch | puff v0 = 1.1 (0.5 + strength), stream v0 = 0.3 (x 0.8-1.2) | |
@@ -318,12 +318,14 @@ tube core in tube radii), R0, v0.
 3. Beat = puff: `burstSize * max(bs, 0.25) * 0.15 / sources` of all particles respawn per source
    on a ring at that source (life x 0.6). Many particles per ring (about 12k per source at
    250k, Burst 1, bs 0.8) keep the tube smooth.
-4. Splat (`shaders/points.glsl.ts`): 1 device px points (segments capped at 1 CSS px, so the
-   fast roll at a ring's edge never draws spokes), additive into an MRT density target: line
-   deposit and wash deposit. rgb = ink x the source's colour vector (absorbance on light paper,
+4. Splat (`shaders/points.glsl.ts`): gl.POINTS of size 1 (not ink's 1 px line segments: a 1 px
+   segment rasterises or not depending on its sub-pixel position and direction, which varied
+   smoothly around a ring and serrated its edge), each dithered by a fresh +-1 texel
+   (triangular) offset every step so consecutive steps carry independent shot noise, additive
+   into an MRT density target: line deposit and wash deposit. rgb = ink x the source's colour vector (absorbance on light paper,
    the colour itself in dark mode), a = ink. Ink per particle = Density x 4 x size gain x tube
    weight 2 exp(-rho^2 / 2 sigma^2) (dense tube core, soft edge) x cooling (1 - age/life)^1.6,
-   x 5 overall; puffs x 0.55 and at once, stream x 0.4 fading in over 0.6 s. The wash deposit is
+   x 8 overall; puffs x 0.55 and at once, stream x 0.4 fading in over 0.6 s. The wash deposit is
    x 0.5 while the ring is intact (1 once dissolved), so a travelling ring leaves little wake.
    Shiver and breath as ink (render only); the kick is 0.04 (ink 0.25): the puff ring is the beat,
    and a large render-time kick smeared rings into radial streaks.
@@ -354,15 +356,18 @@ above, where the line blur widens instead (default 0.25 = display 0). Ink keeps 
 deposit x size^0.6 and line blur x size (min lowered from 0.5 to 0.25; its default 0.5 now
 shows 0.7).
 
-Below 0.5 px (`shared/subpixel.ts`, `DensityTargets`) particles splat into a half-resolution
-density target (ink per texel x 1/4, so total ink is conserved) and the trail pass reads it
-through a pre-filter that also upsamples: 4 x 4 bilinear taps `spread` half-res texels apart,
-weights (1 3 3 1) per axis, i.e. the binomial 5 x 5 kernel at spread 1 (sigma ~2 device px at
-dpr 1). Spread ramps from 0 (plain bilinear upsample) at Size 0.5 to 1 x dpr at 0.25, so at
-the minimum a lone particle is a soft smudge and only accumulated density reads. At 0.5 and
+Below 0.5 px (`shared/subpixel.ts`, `DensityTargets`) particles splat into a low-resolution
+density target, 300 CSS px tall (at most half the drawing buffer: 1/2 res for a 600 px view,
+1/3 for 900 px; the particle count does not grow with the screen, so the filter is
+screen-relative), ink per texel x the texel area so total ink is conserved, and the trail pass
+reads it through a pre-filter that also upsamples: 4 x 4 bilinear taps `spread` low-res texels
+apart, weights (1 3 3 1) per axis, i.e. the binomial 5 x 5 kernel at spread 1. Spread ramps
+from 0 (plain bilinear upsample) at Size 0.5 to 1 at 0.25, so at the minimum a lone particle
+is a soft smudge and only accumulated density reads. (M8 used a fixed half-res target: at
+1440 x 900 the shot noise of a travelling ring still showed as a fine serration.) At 0.5 and
 above (Ink's default) the full-res target is used and read with the old exact texelFetch; the
 half-res taps only run while the half target was written since the last trail update. Going
-from 0.5 to 0.49 is a small step (full res to bilinear half res), not a ramp.
+from 0.5 to 0.49 is a small step (full res to bilinear low res), not a ramp.
 
 Audio: bass -> stream supply x (1 + 2 bass) and wander x (1 + bass); mid -> turbulence x (1 + 1.5 mid);
 high -> curl frequency x (1 + high), ink x (1 + 0.5 high); beat -> puff ring, kick, shiver, wash swell.

@@ -70,12 +70,13 @@ const TUNE = {
   /** Ink multiplier of stream smoke. */
   streamInk: 0.4,
   /** Ink per particle gain (so Density 2.5 at Size 0 is the reference look). */
-  inkGain: 5,
+  inkGain: 8,
 
+  /** Per-step splat dither, splat-target texels (triangular +-): consecutive steps get
+   *  independent shot noise, so a travelling ring's edge does not streak. */
+  jitter: 1,
   /** Wash (haze) deposit weight of an intact ring; 1 once it has dissolved. */
   washYoung: 0.5,
-  /** Longest splat segment per step, CSS px (no spokes from the fast edge of a ring). */
-  maxSeg: 1,
   /** Cooling: ink per particle x (1 - age / life)^cool; fade in over fadeIn s. */
   cool: 1.6,
   fadeIn: 0.6,
@@ -122,7 +123,6 @@ export class SmokeEffect implements Effect<SmokeParams> {
   private beatUsed = false;
   private simTime = 0;
   private fieldShift = 0;
-  private stepDt = 1 / 60;
   private noiseScale = 1;
   private colorK = Array.from({ length: MAX_ATTRACTORS }, () => new THREE.Vector3());
   private colorKey = '';
@@ -175,6 +175,7 @@ export class SmokeEffect implements Effect<SmokeParams> {
   private streamAt = [0.1, 0.35, 0.6];
   private rng = 0x51f2a3;
   private resolvedMode: ResolvedSmokeMode = 'light';
+  private splatStep = 0;
 
   private trails = new SmokeTrails();
   private stepsSinceRender = 0;
@@ -191,7 +192,6 @@ export class SmokeEffect implements Effect<SmokeParams> {
     uSize: { value: 1 },
     uAspect: { value: 1 },
     uViewPx: { value: new THREE.Vector2(1, 1) },
-    uStepDt: { value: 1 / 60 },
     uInk: { value: 0.1 },
     uColorK: { value: this.colorK },
     uCool: { value: TUNE.cool },
@@ -205,8 +205,9 @@ export class SmokeEffect implements Effect<SmokeParams> {
     uShiver: { value: 0 },
     uShiverScale: { value: 1 },
     uRTime: { value: 0 },
+    uStep: { value: 0 },
+    uJitter: { value: 0 },
     uBreath: { value: 0 },
-    uMaxSeg: { value: 2 },
     uRingLife: { value: new THREE.Vector2() },
     uDissolve: { value: TUNE.dissolve },
     uWashYoung: { value: TUNE.washYoung },
@@ -228,8 +229,8 @@ export class SmokeEffect implements Effect<SmokeParams> {
       depthTest: false,
       depthWrite: false,
     });
-    this.geometry.setDrawRange(0, 2 * params.particleCount);
-    const points = new THREE.LineSegments(this.geometry, this.material);
+    this.geometry.setDrawRange(0, params.particleCount);
+    const points = new THREE.Points(this.geometry, this.material);
     points.frustumCulled = false;
     this.scene.add(points);
   }
@@ -238,14 +239,14 @@ export class SmokeEffect implements Effect<SmokeParams> {
     this.aspect = size.width / Math.max(1, size.height);
     this.dpr = size.dpr;
     renderer.getDrawingBufferSize(this.bufferSize);
-    this.trails.resize(this.bufferSize.x, this.bufferSize.y);
+    this.trails.resize(this.bufferSize.x, this.bufferSize.y, this.dpr);
     this.stepsSinceRender = 0;
   }
 
   onParamChange(id: string, params: Readonly<SmokeParams>): void {
     if (id === 'particleCount') {
       this.state.allocate(params.particleCount);
-      this.geometry.setDrawRange(0, 2 * params.particleCount);
+      this.geometry.setDrawRange(0, params.particleCount);
       this.needsInit = true;
     } else if (id === 'mode' || id === 'background') {
       // The density encoding (absorbance vs colour) changes with the resolved mode.
@@ -265,7 +266,6 @@ export class SmokeEffect implements Effect<SmokeParams> {
     const u = this.simUniforms;
     const sdt = dt * params.speed;
     this.simTime += sdt;
-    this.stepDt = sdt;
     const bass = audio.bass, mid = audio.mid, high = audio.high;
     const bs = audio.beatStrength;
     this.attractors.update(sdt, T.wander * (1 + T.bassSpeed * bass), this.aspect);
@@ -367,7 +367,6 @@ export class SmokeEffect implements Effect<SmokeParams> {
     u.uSize.value = this.state.size;
     u.uAspect.value = this.aspect;
     u.uViewPx.value.set(target.width, target.height);
-    u.uStepDt.value = this.stepDt;
     // Size below 1 px shrinks each particle's ink (a sub-pixel point), not its footprint.
     u.uInk.value = this.trails.densityInkScale(target) * params.density * T.inkGain * smokeSizeGain(params.pointSize) * this.dpr * this.dpr * (1 + T.highInk * high);
     this.updateColors(params);
@@ -381,8 +380,9 @@ export class SmokeEffect implements Effect<SmokeParams> {
     u.uShiver.value = bs > 0.01 ? bs * T.shiver * (0.5 + params.burstSize) : 0;
     u.uShiverScale.value = this.noiseScale * T.shiverScale;
     u.uRTime.value = time;
+    u.uStep.value = this.splatStep = (this.splatStep + 1) >>> 0;
+    u.uJitter.value = T.jitter;
     u.uBreath.value = bass * T.breath;
-    u.uMaxSeg.value = T.maxSeg * this.dpr;
     u.uRingLife.value.set(T.puffRingLife, T.streamRingLife);
     u.uDissolve.value = T.dissolve;
     u.uWashYoung.value = T.washYoung;

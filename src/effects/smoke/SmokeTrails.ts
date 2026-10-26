@@ -56,6 +56,7 @@ export class SmokeTrails {
   private cur = 0;
   private needsClear = true;
   private width = 0;
+  private dpr = 1;
   private height = 0;
   private frame = 0;
   private prevClear = new THREE.Color();
@@ -107,10 +108,11 @@ export class SmokeTrails {
   /** Ink multiplier for splatting into `target` (texel area relative to the full-res target). */
   densityInkScale(target: THREE.WebGLRenderTarget): number { return this.density.inkScale(target); }
 
-  resize(width: number, height: number): void {
+  resize(width: number, height: number, dpr = 1): void {
     width = Math.max(1, Math.round(width));
     height = Math.max(1, Math.round(height));
-    if (width === this.width && height === this.height && this.trails) return;
+    if (width === this.width && height === this.height && dpr === this.dpr && this.trails) return;
+    this.dpr = dpr;
     this.disposeTargets();
     this.width = width;
     this.height = height;
@@ -120,7 +122,7 @@ export class SmokeTrails {
       wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping,
       generateMipmaps: false, depthBuffer: false, stencilBuffer: false,
     });
-    this.density.allocate(width, height);
+    this.density.allocate(width, height, dpr);
     this.temp = make(2);
     this.trails = [make(2), make(2)];
     this.cur = 0;
@@ -187,7 +189,7 @@ export class SmokeTrails {
     v.uTexel.value.set(1 / this.width, 1 / this.height);
     v.uSigmaLine.value = sigmaLine;
     v.uSigmaWash.value = sigmaWash;
-    this.density.bind(v, params.pointSize, dpr, [['uDensity', 'uDensityHalf'], ['uDensityWash', 'uDensityWashHalf']]);
+    this.density.bind(v, params.pointSize, [['uDensity', 'uDensityHalf'], ['uDensityWash', 'uDensityWashHalf']]);
     v.uFade.value.set(Math.pow(L.lineFade, steps), Math.pow(L.washFade, steps));
     this.blurV.render(renderer, write);
     this.cur = 1 - this.cur;

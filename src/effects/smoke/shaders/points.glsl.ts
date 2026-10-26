@@ -3,14 +3,15 @@ import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
 
 /**
  * Smoke particle splat into the density target (copied from ink's and diverged: age cooling,
- * per-source colour vector instead of absorbance), drawn as gl.LINES: two vertices per particle,
- * no vertex attributes. Particle = gl_VertexID / 2 indexes the state textures (row-major,
- * width uSize); vertex 0 is where the particle was one step ago, vertex 1 where it is now.
- * Consecutive steps' segments tile the path, so fast particles draw continuous strokes
- * instead of a row of specks. Slow particles get a 1 device px segment (a point). Segments are
- * capped at uMaxSeg px, so the fast roll at the edge of a ring never draws spokes.
+ * per-source colour vector instead of absorbance, tube weight), drawn as gl.POINTS of size 1:
+ * one vertex per particle, no vertex attributes; gl_VertexID indexes the state textures
+ * (row-major, width uSize).
  *
- * Ink per particle is constant regardless of length: per-pixel ink = uInk / length.
+ * Points, not ink's 1 px line segments: a 1 px segment produces a fragment or not depending on
+ * its sub-pixel position and direction (diamond-exit rule). Ring particles share a smoothly
+ * varying direction field, so the dropped share varied around the ring and drew a regular
+ * gear-tooth serration along the tube. A size-1 point always produces exactly one fragment.
+ *
  * Output: rgb = ink * uColorK[source], a = ink. uColorK is the absorbance (-ln colour) on light
  * paper (subtractive) and the colour itself in dark mode (additive light).
  * Cooling: ink per particle falls as (1 - age / life)^uCool, so smoke thins as it rises.
@@ -33,7 +34,6 @@ uniform float uTubeSigma;   // tube cross-section sigma (tube radii)
 uniform int   uSize;
 uniform float uAspect;
 uniform vec2  uViewPx;      // drawing buffer size, device px
-uniform float uStepDt;      // one simulation step, simulation seconds (x speed)
 uniform float uInk;         // ink per particle (device px units)
 uniform vec3  uColorK[${MAX_ATTRACTORS}];
 uniform float uCool;        // ink falls as (1 - age / life)^uCool
@@ -47,8 +47,9 @@ uniform float uKickRadius;  // the kick fades out by this distance
 uniform float uShiver;      // shiver displacement amplitude (0 = none)
 uniform float uShiverScale; // shiver field frequency
 uniform float uRTime;       // real-time clock, seconds (not scaled by speed)
+uniform uint  uStep;        // splat counter: a new dither every step
+uniform float uJitter;      // per-step position dither, splat-target texels (triangular +-)
 uniform float uBreath;      // radial scale about the nearest source (bass)
-uniform float uMaxSeg;      // longest segment drawn, device px (longer steps are shortened)
 
 uniform vec2  uRingLife;    // ring life (s): puff, stream
 uniform float uDissolve;    // ring starts dissolving at this fraction of its life
@@ -60,7 +61,8 @@ out float vWash;
 ${NOISE_GLSL}
 
 void main() {
-  int id = gl_VertexID >> 1;
+  int id = gl_VertexID;
+  gl_PointSize = 1.0;
   ivec2 c = ivec2(id % uSize, id / uSize);
   vec4 a = texelFetch(uStateA, c, 0);
   vec4 b = texelFetch(uStateB, c, 0);
@@ -96,21 +98,18 @@ void main() {
     a.xy += curl2(vec3(q, uRTime * 7.0)) * uShiver;
   }
 
-  // Segment in device px: from p - v*dt to p, at least 1 px long.
-  vec2 toPx = 0.5 * uViewPx * vec2(1.0 / uAspect, 1.0);
-  vec2 dPx = a.zw * uStepDt * toPx;
-  // Capped: a fast rolling particle at the soft edge of a ring would otherwise draw a spoke.
-  float len = min(length(dPx), uMaxSeg);
-  vec2 dir = len > 1e-4 ? dPx / len : vec2(1.0, 0.0);
-  float L = max(len, 1.0);
-  vec2 head = vec2(a.x / uAspect, a.y);
-  vec2 tail = head - dir * L / (0.5 * uViewPx);
-  // Vertex 1 = head, vertex 0 = tail. Centre slow points on the particle.
-  vec2 pos = (gl_VertexID & 1) == 1 ? head : tail;
-  if (len < 1.0) pos += dir * (L * 0.5) / (0.5 * uViewPx);
+  vec2 pos = vec2(a.x / uAspect, a.y);
+  // Dither: a fresh offset every step, so the shot noise of consecutive steps is independent.
+  // Without it a ring's particles keep their relative positions, and as the ring travels and
+  // widens the trails smear each particle's noise into short radial streaks at its edge.
+  if (uJitter > 0.0) {
+    vec3 j = vec3(pcg3d(uvec3(uint(id), uStep, 0x7A11u))) * (1.0 / 4294967296.0);
+    vec3 k = vec3(pcg3d(uvec3(uint(id), uStep, 0x3C9Du))) * (1.0 / 4294967296.0);
+    pos += (j.xy + k.xy - 1.0) * uJitter / (0.5 * uViewPx);
+  }
 
   int e = clamp(int(b.w + 0.5) & 3, 0, ${MAX_ATTRACTORS - 1});
-  float ink = uInk * alpha / L;
+  float ink = uInk * alpha;
   vInk = vec4(uColorK[e] * ink, ink);
   gl_Position = vec4(pos, 0.0, 1.0);
 }

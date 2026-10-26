@@ -186,7 +186,7 @@ export class InkEffect implements Effect<InkParams> {
     this.aspect = size.width / Math.max(1, size.height);
     this.dpr = size.dpr;
     renderer.getDrawingBufferSize(this.bufferSize);
-    this.trails.resize(this.bufferSize.x, this.bufferSize.y);
+    this.trails.resize(this.bufferSize.x, this.bufferSize.y, this.dpr);
     this.stepsSinceRender = 0;
   }
   private bufferSize = new THREE.Vector2();

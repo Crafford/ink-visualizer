@@ -5,27 +5,31 @@ import * as THREE from 'three';
  *
  * Particles are always rasterised as 1 px points / segments; a smaller Size shrinks the ink
  * each one carries (per effect). Below `start` (0.5 px) the particles are splatted into a
- * HALF-resolution density target instead of the full one, and the trail pass reads it through
- * a pre-filter: a 4 x 4 grid of bilinear taps `spread` half-res texels apart with weights
- * (1 3 3 1) per axis (the binomial 5 x 5 kernel at spread 1), which also upsamples. So at the
- * minimum size a lone particle lands as a soft smudge (sigma ~2 device px at dpr 1) and only
- * accumulated density reads. The spread ramps from 0 (plain bilinear upsample) at `start` to
- * `maxSpread` x dpr at `full`. At or above `start` (Ink's default 0.5) the full-resolution
+ * LOW-resolution density target (`lowResCss` CSS px tall, at most half res; the names below say
+ * "half") instead of the full one, and the trail pass reads it through a pre-filter: a 4 x 4
+ * grid of bilinear taps `spread` low-res texels apart with weights (1 3 3 1) per axis (the
+ * binomial 5 x 5 kernel at spread 1), which also upsamples. So at the minimum size a lone
+ * particle lands as a soft smudge and only accumulated density reads. The spread ramps from 0
+ * (plain bilinear upsample) at `start` to `maxSpread` at `full`. At or above `start` (Ink's default 0.5) the full-resolution
  * target is used and read with an exact texelFetch, so the look is unchanged.
  */
 export const SUBPIXEL = {
   start: 0.5,
   full: 0.25,
   maxSpread: 1,
+  /** Height of the low-res density target in CSS px (at most half the drawing buffer). The
+   *  particle count does not grow with the screen, so the filter is screen-relative: a 900 px
+   *  tall view gets a 1/3 res target, a 600 px one 1/2. */
+  lowResCss: 300,
 };
 
 /** True when a Size (px) splats into the half-resolution density target. */
 export const subPixelHalf = (size: number) => size < SUBPIXEL.start;
 
-/** Pre-filter tap spacing in half-res texels for a Size (px) and dpr. */
-export function subPixelSpread(size: number, dpr: number): number {
+/** Pre-filter tap spacing in low-res texels for a Size (px). */
+export function subPixelSpread(size: number): number {
   const w = Math.min(1, Math.max(0, (SUBPIXEL.start - size) / (SUBPIXEL.start - SUBPIXEL.full)));
-  return w * SUBPIXEL.maxSpread * dpr;
+  return w * SUBPIXEL.maxSpread;
 }
 
 /**
@@ -68,7 +72,7 @@ export class DensityTargets {
 
   constructor(private count: number) {}
 
-  allocate(width: number, height: number): void {
+  allocate(width: number, height: number, dpr = 1): void {
     this.dispose();
     const make = (w: number, h: number) => new THREE.WebGLRenderTarget(w, h, {
       type: THREE.HalfFloatType, format: THREE.RGBAFormat, count: this.count,
@@ -77,7 +81,8 @@ export class DensityTargets {
       generateMipmaps: false, depthBuffer: false, stencilBuffer: false,
     });
     this.full = make(width, height);
-    this.half = make(Math.max(1, Math.ceil(width / 2)), Math.max(1, Math.ceil(height / 2)));
+    const scale = Math.min(0.5, (SUBPIXEL.lowResCss * dpr) / Math.max(1, height));
+    this.half = make(Math.max(1, Math.ceil(width * scale)), Math.max(1, Math.ceil(height * scale)));
     this.halfUsed = false;
   }
 
@@ -89,7 +94,7 @@ export class DensityTargets {
   }
 
   /** Set the densityAt uniforms (+ the samplers named `fullName` / `halfName` by attachment). */
-  bind(u: Record<string, THREE.IUniform>, size: number, dpr: number, names: readonly (readonly [string, string])[]): void {
+  bind(u: Record<string, THREE.IUniform>, size: number, names: readonly (readonly [string, string])[]): void {
     names.forEach(([f, h], i) => {
       u[f].value = this.full!.textures[i];
       u[h].value = this.half!.textures[i];
@@ -97,7 +102,7 @@ export class DensityTargets {
     u.uHalfOn.value = this.halfUsed;
     u.uHalfTexel.value.set(1 / this.half!.width, 1 / this.half!.height);
     u.uFullTexel.value.set(1 / this.full!.width, 1 / this.full!.height);
-    u.uSpread.value = subPixelSpread(size, dpr);
+    u.uSpread.value = subPixelSpread(size);
   }
 
   /** Ink multiplier for a target: per-texel ink x texel area, so total ink is conserved. */

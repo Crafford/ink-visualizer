@@ -125,7 +125,9 @@ vec2 ringPos(vec4 C, vec4 D, bool puff, float t) {
                        + 0.3 * sin(TAU * t / mix(2.0, 4.0, w.z) + TAU * w.w) * cos(theta + TAU * h.w));
   float R = R0 * (1.0 + (uRGrow - 1.0) * slow) * (1.0 + wob);
   float r = R0 * mix(uTube.x, uTube.y, slow);
-  float omega = uRoll * v0 / max(R0, 1e-3) / (1.0 + 2.0 * rho * rho);
+  // Per-particle roll rate +-10% (from phi0's fraction, independent of theta), so the roll
+  // never lines particles up into stripes.
+  float omega = uRoll * v0 / max(R0, 1e-3) / (1.0 + 2.0 * rho * rho) * (0.9 + 0.2 * fract(D.x * 7.13));
   float phi = D.x + omega * uTau * slow;
   vec3 radial = e1 * cos(theta) + e2 * sin(theta);
   vec3 p = (R + rho * r * cos(phi)) * radial + (rho * r * sin(phi) + v0 * uTau * slow) * ax;
