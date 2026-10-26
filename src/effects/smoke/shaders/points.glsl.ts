@@ -7,7 +7,8 @@ import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
  * no vertex attributes. Particle = gl_VertexID / 2 indexes the state textures (row-major,
  * width uSize); vertex 0 is where the particle was one step ago, vertex 1 where it is now.
  * Consecutive steps' segments tile the path, so fast particles draw continuous strokes
- * instead of a row of specks. Slow particles get a 1 device px segment (a point).
+ * instead of a row of specks. Slow particles get a 1 device px segment (a point). Segments are
+ * capped at uMaxSeg px, so the fast roll at the edge of a ring never draws spokes.
  *
  * Ink per particle is constant regardless of length: per-pixel ink = uInk / length.
  * Output: rgb = ink * uColorK[source], a = ink. uColorK is the absorbance (-ln colour) on light
@@ -27,6 +28,8 @@ precision highp sampler2D;
 
 uniform sampler2D uStateA;
 uniform sampler2D uStateB;
+uniform sampler2D uStateD;  // phi0, rho (tube radii), R0, v0
+uniform float uTubeSigma;   // tube cross-section sigma (tube radii)
 uniform int   uSize;
 uniform float uAspect;
 uniform vec2  uViewPx;      // drawing buffer size, device px
@@ -36,6 +39,7 @@ uniform vec3  uColorK[${MAX_ATTRACTORS}];
 uniform float uCool;        // ink falls as (1 - age / life)^uCool
 uniform float uFadeIn;      // seconds (steady stream)
 uniform float uPuffInk;     // ink multiplier of puff smoke (fades in at once, so the ring shows)
+uniform float uStreamInk;   // ink multiplier of stream smoke
 uniform vec2  uAttractors[${MAX_ATTRACTORS}];  // view space
 uniform int   uAttractorCount;
 uniform float uKick;        // beat kick: radial expansion about the nearest core (0 = none)
@@ -44,8 +48,14 @@ uniform float uShiver;      // shiver displacement amplitude (0 = none)
 uniform float uShiverScale; // shiver field frequency
 uniform float uRTime;       // real-time clock, seconds (not scaled by speed)
 uniform float uBreath;      // radial scale about the nearest source (bass)
+uniform float uMaxSeg;      // longest segment drawn, device px (longer steps are shortened)
+
+uniform vec2  uRingLife;    // ring life (s): puff, stream
+uniform float uDissolve;    // ring starts dissolving at this fraction of its life
+uniform float uWashYoung;   // wash deposit weight of an intact ring (1 once dissolved)
 
 out vec4 vInk;
+out float vWash;
 
 ${NOISE_GLSL}
 
@@ -54,11 +64,17 @@ void main() {
   ivec2 c = ivec2(id % uSize, id / uSize);
   vec4 a = texelFetch(uStateA, c, 0);
   vec4 b = texelFetch(uStateB, c, 0);
-  if (b.y < 0.0) { vInk = vec4(0.0); gl_Position = vec4(2.0, 2.0, 0.0, 1.0); return; }
+  if (b.y < 0.0) { vInk = vec4(0.0); vWash = 0.0; gl_Position = vec4(2.0, 2.0, 0.0, 1.0); return; }
   float t = b.x / max(b.y, 1e-3);
   // Cooling: thins steadily with age (faster than ink); fades in so the source is not a blob.
   bool puff = b.w > 3.5;
-  float alpha = pow(clamp(1.0 - t, 0.0, 1.0), uCool) * (puff ? uPuffInk * smoothstep(0.0, 0.04, b.x) : smoothstep(0.0, uFadeIn, b.x));
+  // Tube cross-section weight (mean 1): the core carries more ink than the sparse gaussian
+  // tail, so the edge of a moving ring is a soft gradient instead of a fringe of single dots.
+  float rho = texelFetch(uStateD, c, 0).y / max(uTubeSigma, 1e-3);
+  float tube = 2.0 * exp(-0.5 * rho * rho);
+  float Tr = puff ? uRingLife.x : uRingLife.y;
+  vWash = mix(uWashYoung, 1.0, smoothstep(uDissolve * Tr, Tr, b.x));
+  float alpha = tube * pow(clamp(1.0 - t, 0.0, 1.0), uCool) * (puff ? uPuffInk * smoothstep(0.0, 0.04, b.x) : uStreamInk * smoothstep(0.0, uFadeIn, b.x));
 
   if (uKick > 0.0 || uBreath > 0.0) {
     vec2 best = vec2(0.0);
@@ -83,7 +99,8 @@ void main() {
   // Segment in device px: from p - v*dt to p, at least 1 px long.
   vec2 toPx = 0.5 * uViewPx * vec2(1.0 / uAspect, 1.0);
   vec2 dPx = a.zw * uStepDt * toPx;
-  float len = length(dPx);
+  // Capped: a fast rolling particle at the soft edge of a ring would otherwise draw a spoke.
+  float len = min(length(dPx), uMaxSeg);
   vec2 dir = len > 1e-4 ? dPx / len : vec2(1.0, 0.0);
   float L = max(len, 1.0);
   vec2 head = vec2(a.x / uAspect, a.y);
@@ -103,9 +120,12 @@ export const SMOKE_POINTS_FRAG = /* glsl */ `
 precision highp float;
 
 in vec4 vInk;
-out vec4 outColor;
+in float vWash;
+layout(location = 0) out vec4 outLine;
+layout(location = 1) out vec4 outWash;
 
 void main() {
-  outColor = vInk;
+  outLine = vInk;
+  outWash = vInk * vWash;
 }
 `;

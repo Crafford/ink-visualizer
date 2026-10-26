@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { InkParams } from './params';
+import { DensityTargets } from '../shared/subpixel';
 import { FullscreenPass } from '../shared/FullscreenPass';
 import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 import { BLUR_H_FRAG, BLUR_V_FRAG, COMPOSITE_FRAG } from './shaders/trail.glsl';
@@ -62,7 +63,7 @@ const lerp = (r: readonly [number, number], t: number) => r[0] + (r[1] - r[0]) *
 export class InkTrails {
   /** Tuning table, read every frame (reachable from the console via ?debug for look work). */
   readonly look = LOOK;
-  private density: THREE.WebGLRenderTarget | null = null;
+  private density = new DensityTargets(1);
   private temp: THREE.WebGLRenderTarget | null = null;
   private trails: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget] | null = null;
   private cur = 0;
@@ -92,8 +93,10 @@ export class InkTrails {
     uSigmaLine: { value: 0 },
     uSigmaWash: { value: 0 },
     uDensity: { value: null as THREE.Texture | null },
+    uDensityHalf: { value: null as THREE.Texture | null },
     uFade: { value: new THREE.Vector2(1, 1) },
     uLineGain: { value: 1 },
+    ...DensityTargets.uniforms(),
   });
   private composite = new FullscreenPass(COMPOSITE_FRAG, {
     uLine: { value: null as THREE.Texture | null },
@@ -111,8 +114,11 @@ export class InkTrails {
     uFrame: { value: 0 },
   });
 
-  /** The target particles are splatted into. Null before the first resize. */
-  get densityTarget(): THREE.WebGLRenderTarget | null { return this.density; }
+  /** The target particles of this Size are splatted into (half-res below 0.5 px). Null before the first resize. */
+  densityTarget(size: number): THREE.WebGLRenderTarget | null { return this.trails ? this.density.pick(size) : null; }
+
+  /** Ink multiplier for splatting into `target` (texel area relative to the full-res target). */
+  densityInkScale(target: THREE.WebGLRenderTarget): number { return this.density.inkScale(target); }
 
   /** Reallocate every target at the drawing-buffer size. Trails restart empty. */
   resize(width: number, height: number): void {
@@ -134,7 +140,7 @@ export class InkTrails {
       stencilBuffer: false,
     };
     const make = (count: number) => new THREE.WebGLRenderTarget(width, height, { ...opts, format: THREE.RGBAFormat, count });
-    this.density = make(1);
+    this.density.allocate(width, height);
     this.temp = make(2);
     this.trails = [make(2), make(2)];
     this.cur = 0;
@@ -146,11 +152,12 @@ export class InkTrails {
     renderer.getClearColor(this.prevClear);
     const prevAlpha = renderer.getClearAlpha();
     renderer.setClearColor(BLACK, 0);
-    for (const t of [this.density!, this.temp!, this.trails![0], this.trails![1]]) {
+    for (const t of [this.temp!, this.trails![0], this.trails![1]]) {
       renderer.setRenderTarget(t);
       renderer.clear(true, false, false);
     }
     renderer.setClearColor(this.prevClear, prevAlpha);
+    this.density.clear(renderer, true);
     this.needsClear = false;
   }
 
@@ -208,18 +215,13 @@ export class InkTrails {
     v.uTexel.value.set(1 / this.width, 1 / this.height);
     v.uSigmaLine.value = sigmaLine;
     v.uSigmaWash.value = sigmaWash;
-    v.uDensity.value = this.density!.texture;
+    this.density.bind(v, params.pointSize, dpr, [['uDensity', 'uDensityHalf']]);
     v.uFade.value.set(Math.pow(params.trailFade, steps), Math.pow(washFade, steps));
     this.blurV.render(renderer, write);
     this.cur = 1 - this.cur;
 
     // Density has been consumed.
-    renderer.getClearColor(this.prevClear);
-    const prevAlpha = renderer.getClearAlpha();
-    renderer.setClearColor(BLACK, 0);
-    renderer.setRenderTarget(this.density);
-    renderer.clear(true, false, false);
-    renderer.setClearColor(this.prevClear, prevAlpha);
+    this.density.clear(renderer);
 
     renderer.setRenderTarget(prevTarget);
     renderer.autoClear = prevAutoClear;
@@ -252,11 +254,11 @@ export class InkTrails {
   }
 
   private disposeTargets(): void {
-    this.density?.dispose();
+    this.density.dispose();
     this.temp?.dispose();
     this.trails?.[0].dispose();
     this.trails?.[1].dispose();
-    this.density = this.temp = null;
+    this.temp = null;
     this.trails = null;
   }
 

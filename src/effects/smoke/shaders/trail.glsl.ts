@@ -1,3 +1,4 @@
+import { DENSITY_PREFILTER_GLSL } from '../../shared/subpixel';
 import { BLUR_COMMON } from '../../shared/shaders/blur.glsl';
 
 /**
@@ -6,7 +7,8 @@ import { BLUR_COMMON } from '../../shared/shaders/blur.glsl';
  * slow sideways sway instead of outward from the sources.
  *
  *   H: temp  = (blurH_line(prev.line), blurH_wash(prev.wash at uv - drift(uv)))
- *   V: trail = (blurV_line(temp.line) * fadeLine + density, blurV_wash(temp.wash) * fadeWash + density)
+ *   V: trail = (blurV_line(temp.line) * fadeLine + density.line, blurV_wash(temp.wash) * fadeWash + density.wash)
+ *   (density.wash is the same splat weighted down while a ring is intact: no smeared wake behind a ring)
  */
 export const SMOKE_BLUR_H_FRAG = /* glsl */ `
 ${BLUR_COMMON}
@@ -27,14 +29,18 @@ void main() {
 
 export const SMOKE_BLUR_V_FRAG = /* glsl */ `
 ${BLUR_COMMON}
-uniform sampler2D uDensity;
+uniform sampler2D uDensity;      // line deposit
+uniform sampler2D uDensityWash;  // wash deposit (young rings put little into the haze)
+uniform sampler2D uDensityHalf;      // the same at half resolution (Size < 0.5 px, shared/subpixel.ts)
+uniform sampler2D uDensityWashHalf;
 uniform vec2  uFade;     // line, wash fade for this update (already pow(fade, steps))
-
+${DENSITY_PREFILTER_GLSL}
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
-  vec4 d = texelFetch(uDensity, ivec2(gl_FragCoord.xy), 0);
+  vec4 d = densityAt(uDensity, uDensityHalf, gl_FragCoord.xy);  // + sub-pixel Size pre-filter
+  vec4 dw = densityAt(uDensityWash, uDensityWashHalf, gl_FragCoord.xy);
   outLine = blur5(uLine, uv, vec2(0.0, 1.0), uSigmaLine) * uFade.x + d;
-  outWash = blur9(uWash, uv, vec2(0.0, 1.0), uSigmaWash) * uFade.y + d;
+  outWash = blur9(uWash, uv, vec2(0.0, 1.0), uSigmaWash) * uFade.y + dw;
 }
 `;
 
