@@ -23,7 +23,7 @@ export const SMOKE_PARAMS = [
   num('smokeSwirl',         'Swirl',        'smoke',     0.6,   9,      0.01,  1.6,    { display: N10_LOG }),
   num('smokeBreeze',        'Breeze',       'smoke',     0,     1,      0.01,  0.2,    n10()),
   num('smokeBrightness',    'Brightness',   'smokeLook', 0,     2,      0.01,  1,      n10()),
-  num('smokeSize',          'Size',         'smokeLook', 0.25,  4,      0.01,  1,      n10({ unit: 'px' })),
+  num('smokeSize',          'Size',         'smokeLook', 0.25,  4,      0.01,  3,      n10({ unit: 'px' })),
   num('smokeDetail',        'Detail',       'smokeLook', 50000, 600000, 10000, 300000, { format: kilo, defaultMobile: 100000 }),
 ] as const satisfies readonly ParamDef[];
 
