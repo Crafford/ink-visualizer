@@ -1,4 +1,4 @@
-import type { Params } from '../app/params';
+import type { ParamValues } from '../app/params';
 
 /** Preset schema version. Bump with a migration in presets/store.ts when the shape changes. */
 export const PRESET_SCHEMA = 1;
@@ -13,9 +13,10 @@ export interface Preset {
   version: typeof PRESET_SCHEMA;
   id: string;
   name: string;
-  /** Effect id from effects/registry.ts. */
+  /** Effect id from effects/registry.ts. Schema 1 files without one are Ink presets. */
   effect: string;
-  params: Partial<Params>;
+  /** App params (audio response) plus the effect's own params. */
+  params: Partial<ParamValues>;
   createdAt: string;
   builtIn?: boolean;
 }

@@ -1,6 +1,5 @@
-import type { Params } from '../app/params';
 import type { ParamStore } from '../app/store';
-import { DEFAULT_PRESET_ID, resolvePreset, type PresetBank } from '../presets/store';
+import { defaultPresetId, resolvePreset, type PresetBank } from '../presets/store';
 import type { Preset } from '../presets/types';
 import { h, type Component } from './dom';
 import { createButton } from './components/Button';
@@ -10,13 +9,18 @@ type Mode = 'idle' | 'saving' | 'deleting';
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'preset';
 
 /**
- * Preset picker: select + Reset (reload the selected preset), then Save / Delete and
- * Export / Import. Save and Delete confirm inline in the second row (no browser dialogs).
+ * Preset picker for the active effect: select (Default + that effect's presets) + Reset
+ * (reload the selected preset), then Save / Delete and Export / Import. Save and Delete
+ * confirm inline in the second row (no browser dialogs). The selection is remembered per
+ * effect for the session. Importing a preset of another effect switches to that effect.
  */
-export function createPresetsSection(store: ParamStore, bank: PresetBank): Component {
-  let selected = DEFAULT_PRESET_ID;
+export function createPresetsSection(
+  store: ParamStore, bank: PresetBank, switchEffect: (effectId: string) => void,
+): Component {
+  const defaultId = () => defaultPresetId(store.effectId);
+  const chosen = new Map<string, string>();
+  let selected = defaultId();
   let mode: Mode = 'idle';
-  const defaults = () => bank.get(DEFAULT_PRESET_ID)!.params as Params;
 
   const select = h('select', { class: 'select', 'aria-label': 'Preset' });
   const status = h('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
@@ -27,17 +31,20 @@ export function createPresetsSection(store: ParamStore, bank: PresetBank): Compo
     status.textContent = msg;
     status.classList.toggle('is-error', error);
   };
-  const current = (): Preset => bank.get(selected) ?? bank.get(DEFAULT_PRESET_ID)!;
+  const current = (): Preset => bank.get(selected) ?? bank.get(defaultId())!;
 
-  const apply = (p: Preset) => store.patch(resolvePreset(p, defaults()));
+  // Over the store's defaults (app + active effect), so every param is set.
+  const apply = (p: Preset) => store.patch(resolvePreset(p, store.defaultValues));
 
   const fillSelect = () => {
-    select.replaceChildren(...bank.list().map((p) => h('option', { value: p.id }, p.name)));
+    select.replaceChildren(...bank.list(store.effectId).map((p) => h('option', { value: p.id }, p.name)));
     select.value = selected;
   };
 
   const choose = (id: string, load = true) => {
-    selected = bank.get(id) ? id : DEFAULT_PRESET_ID;
+    const p = bank.get(id);
+    selected = p && p.effect === store.effectId ? id : defaultId();
+    chosen.set(store.effectId, selected);
     fillSelect();
     if (load) apply(current());
     setMode('idle');
@@ -50,7 +57,7 @@ export function createPresetsSection(store: ParamStore, bank: PresetBank): Compo
   });
   const commitSave = () => {
     try {
-      const p = bank.save(nameField.value, store.all);
+      const p = bank.save(nameField.value, store.all, store.effectId);
       say(`Saved “${p.name}”.`);
       choose(p.id, false);
     } catch (err) {
@@ -84,7 +91,7 @@ export function createPresetsSection(store: ParamStore, bank: PresetBank): Compo
       const yes = small('Delete', () => {
         bank.remove(p.id);
         say(`Deleted “${p.name}”.`);
-        choose(DEFAULT_PRESET_ID, false);
+        choose(defaultId(), false);
       }, undefined, true);
       actions.replaceChildren(
         h('span', { class: 'preset-confirm' }, `Delete “${p.name}”?`),
@@ -118,6 +125,7 @@ export function createPresetsSection(store: ParamStore, bank: PresetBank): Compo
     try {
       const added = bank.importFile(await f.text());
       say(added.length === 1 ? `Imported “${added[0].name}”.` : `Imported ${added.length} presets.`);
+      if (added[0].effect !== store.effectId) switchEffect(added[0].effect);
       choose(added[0].id);
     } catch (err) {
       say((err as Error).message, true);
@@ -133,10 +141,16 @@ export function createPresetsSection(store: ParamStore, bank: PresetBank): Compo
 
   fillSelect();
   setMode('idle');
+  // Effect switched: show its presets and its last selection; values are the store's.
+  const offEffect = store.onEffect((effectId) => {
+    selected = chosen.get(effectId) ?? defaultId();
+    fillSelect();
+    setMode('idle');
+  });
 
   const el = h('div', { class: 'presets' },
     h('div', { class: 'preset-row' }, select, reset),
     actions, status, file,
   );
-  return { el, dispose: () => {} };
+  return { el, dispose: offEffect };
 }

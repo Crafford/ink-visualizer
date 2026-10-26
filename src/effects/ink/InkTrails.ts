@@ -1,44 +1,8 @@
 import * as THREE from 'three';
-import type { Params } from '../../app/params';
-import { FULLSCREEN_VERT, MAX_ATTRACTORS } from './shaders/sim.glsl';
+import type { InkParams } from './params';
+import { FullscreenPass } from '../shared/FullscreenPass';
+import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 import { BLUR_H_FRAG, BLUR_V_FRAG, COMPOSITE_FRAG } from './shaders/trail.glsl';
-
-/** One fullscreen-triangle draw with its own raw shader material. */
-class FullscreenPass<U extends Record<string, THREE.IUniform>> {
-  readonly uniforms: U;
-  private scene = new THREE.Scene();
-  private camera = new THREE.Camera();
-  private geometry = new THREE.BufferGeometry();
-  private material: THREE.RawShaderMaterial;
-
-  constructor(fragmentShader: string, uniforms: U) {
-    this.uniforms = uniforms;
-    this.material = new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: FULLSCREEN_VERT,
-      fragmentShader,
-      uniforms,
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.NoBlending,
-    });
-    this.geometry.setDrawRange(0, 3);
-    const tri = new THREE.Mesh(this.geometry, this.material);
-    tri.frustumCulled = false;
-    this.scene.add(tri);
-  }
-
-  /** Overwrites every pixel of `target`; assumes the caller turned autoClear off. */
-  render(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget | null): void {
-    renderer.setRenderTarget(target);
-    renderer.render(this.scene, this.camera);
-  }
-
-  dispose(): void {
-    this.material.dispose();
-    this.geometry.dispose();
-  }
-}
 
 /** Look tuning that is not exposed in the panel. */
 export const LOOK = {
@@ -200,7 +164,7 @@ export class InkTrails {
    * attractors are in view space (x in [-aspect, aspect], y in [-1, 1]).
    */
   update(
-    renderer: THREE.WebGLRenderer, params: Readonly<Params>, steps: number, dpr: number, time: number,
+    renderer: THREE.WebGLRenderer, params: Readonly<InkParams>, steps: number, dpr: number, time: number,
     attractors: readonly THREE.Vector2[], attractorCount: number, beatStrength: number,
   ): void {
     if (!this.trails || steps <= 0) return;
@@ -262,7 +226,7 @@ export class InkTrails {
   }
 
   /** Composite the current trail to the default framebuffer. */
-  present(renderer: THREE.WebGLRenderer, params: Readonly<Params>, dpr: number, beatStrength: number): void {
+  present(renderer: THREE.WebGLRenderer, params: Readonly<InkParams>, dpr: number, beatStrength: number): void {
     if (!this.trails) return;
     const c = this.composite.uniforms;
     c.uLine.value = this.trails[this.cur].textures[0];

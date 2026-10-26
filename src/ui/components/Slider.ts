@@ -1,4 +1,4 @@
-import { uiScale, type NumberParamDef, type NumberParamId } from '../../app/params';
+import { uiScale, type NumberParamDef } from '../../app/params';
 import type { ParamStore } from '../../app/store';
 import { h, nextId, type Component } from '../dom';
 import { createNumberField } from './NumberField';
@@ -9,7 +9,7 @@ import { createNumberField } from './NumberField';
  * keyboard and screen-reader support. Double-click resets to the default.
  */
 export function createSlider(def: NumberParamDef, store: ParamStore): Component {
-  const id = def.id as NumberParamId;
+  const id = def.id;
   const inputId = nextId(`p-${def.id}`);
   const scale = uiScale(def);
 
@@ -37,6 +37,6 @@ export function createSlider(def: NumberParamDef, store: ParamStore): Component 
     ),
     range,
   );
-  const unwatch = store.watch(id, paint);
+  const unwatch = store.watch<number>(id, paint);
   return { el, dispose: unwatch };
 }

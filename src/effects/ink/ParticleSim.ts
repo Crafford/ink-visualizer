@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { FULLSCREEN_VERT, MAX_ATTRACTORS, SIM_FRAG } from './shaders/sim.glsl';
+import { PingPongState } from '../shared/PingPongState';
+import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
+import { SIM_FRAG } from './shaders/sim.glsl';
 
 /** Per-step inputs, already mapped from params + audio by the effect. Times are simulation seconds. */
 export interface SimInputs {
@@ -38,10 +40,9 @@ export interface SimInputs {
   edgeNoise: number;
 }
 
-type FloatKind = 'float' | 'half';
-
 /**
- * GPU particle state and the simulation pass.
+ * Ink particle state and simulation pass: maps SimInputs onto the uniforms and runs the
+ * shared PingPongState.
  *
  * State lives in a ping-pong pair of 3-attachment (MRT) float render targets:
  *   textures[0] = pos.xy, vel.xy
@@ -51,18 +52,8 @@ type FloatKind = 'float' | 'half';
  * One fullscreen-triangle draw per step reads the current target, writes the other.
  */
 export class ParticleSim {
-  readonly floatKind: FloatKind;
-  size = 0;
-  count = 0;
+  private state: PingPongState;
 
-  private targets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget] | null = null;
-  private cur = 0;
-  private frame = 0;
-
-  private scene = new THREE.Scene();
-  private camera = new THREE.Camera(); // unused by the raw shader, required by render()
-  private geometry = new THREE.BufferGeometry();
-  private material: THREE.RawShaderMaterial;
   private uniforms = {
     uStateA: { value: null as THREE.Texture | null },
     uStateB: { value: null as THREE.Texture | null },
@@ -105,63 +96,20 @@ export class ParticleSim {
   };
 
   constructor(renderer: THREE.WebGLRenderer, count: number) {
-    this.floatKind = ParticleSim.pickFloatKind(renderer);
-    console.info(
-      `[ink] particle state format: ${this.floatKind === 'float' ? 'RGBA32F (EXT_color_buffer_float)' : 'RGBA16F (EXT_color_buffer_half_float), reduced precision'}`,
-    );
-
-    this.material = new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: FULLSCREEN_VERT,
-      fragmentShader: SIM_FRAG,
-      uniforms: this.uniforms,
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.NoBlending,
-    });
-    // Attribute-less draw of 3 vertices; the vertex shader builds the triangle from gl_VertexID.
-    this.geometry.setDrawRange(0, 3);
-    const tri = new THREE.Mesh(this.geometry, this.material);
-    tri.frustumCulled = false;
-    this.scene.add(tri);
-
-    this.allocate(count);
+    this.state = new PingPongState(renderer, SIM_FRAG, this.uniforms, 3, count, 'ink');
   }
 
-  private static pickFloatKind(renderer: THREE.WebGLRenderer): FloatKind {
-    const gl = renderer.getContext();
-    if (gl.getExtension('EXT_color_buffer_float')) return 'float';
-    if (gl.getExtension('EXT_color_buffer_half_float')) return 'half';
-    throw new Error('Float render targets are not supported (need EXT_color_buffer_float or _half_float)');
-  }
+  get floatKind() { return this.state.floatKind; }
+  get size() { return this.state.size; }
+  get count() { return this.state.count; }
 
   /** (Re)allocate state for `count` particles. Contents are undefined until init(). */
-  allocate(count: number): void {
-    const size = Math.ceil(Math.sqrt(count));
-    this.count = count;
-    if (size === this.size && this.targets) return;
-    this.disposeTargets();
-    this.size = size;
-    const opts: THREE.RenderTargetOptions = {
-      count: 3,
-      type: this.floatKind === 'float' ? THREE.FloatType : THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      wrapS: THREE.ClampToEdgeWrapping,
-      wrapT: THREE.ClampToEdgeWrapping,
-      generateMipmaps: false,
-      depthBuffer: false,
-      stencilBuffer: false,
-    };
-    this.targets = [new THREE.WebGLRenderTarget(size, size, opts), new THREE.WebGLRenderTarget(size, size, opts)];
-    this.cur = 0;
-  }
+  allocate(count: number): void { this.state.allocate(count); }
 
   /** Current state textures (read side). */
-  get stateA(): THREE.Texture { return this.targets![this.cur].textures[0]; }
-  get stateB(): THREE.Texture { return this.targets![this.cur].textures[1]; }
-  get stateC(): THREE.Texture { return this.targets![this.cur].textures[2]; }
+  get stateA(): THREE.Texture { return this.state.texture(0); }
+  get stateB(): THREE.Texture { return this.state.texture(1); }
+  get stateC(): THREE.Texture { return this.state.texture(2); }
 
   /** Reset the state: every particle dormant. */
   init(renderer: THREE.WebGLRenderer, inputs: SimInputs): void {
@@ -176,14 +124,8 @@ export class ParticleSim {
 
   private run(renderer: THREE.WebGLRenderer, s: SimInputs): void {
     const u = this.uniforms;
-    const read = this.targets![this.cur];
-    const write = this.targets![1 - this.cur];
-    u.uStateA.value = read.textures[0];
-    u.uStateB.value = read.textures[1];
-    u.uStateC.value = read.textures[2];
     u.uDt.value = s.dt;
     u.uTime.value = s.time;
-    u.uFrame.value = this.frame = (this.frame + 1) >>> 0;
     u.uAspect.value = s.aspect;
     u.uAttractors.value = s.attractors as THREE.Vector2[];
     u.uAttractorCount.value = Math.max(1, Math.min(MAX_ATTRACTORS, s.attractorCount));
@@ -216,26 +158,10 @@ export class ParticleSim {
     u.uFeatherFreq.value = s.featherFreq;
     u.uEdgeNoise.value = s.edgeNoise;
 
-    const prevTarget = renderer.getRenderTarget();
-    const prevAutoClear = renderer.autoClear;
-    renderer.autoClear = false; // every texel is overwritten, a clear would be wasted bandwidth
-    renderer.setRenderTarget(write);
-    renderer.render(this.scene, this.camera);
-    renderer.setRenderTarget(prevTarget);
-    renderer.autoClear = prevAutoClear;
-    this.cur = 1 - this.cur;
-  }
-
-  private disposeTargets(): void {
-    if (!this.targets) return;
-    this.targets[0].dispose();
-    this.targets[1].dispose();
-    this.targets = null;
+    this.state.run(renderer);
   }
 
   dispose(): void {
-    this.disposeTargets();
-    this.material.dispose();
-    this.geometry.dispose();
+    this.state.dispose();
   }
 }

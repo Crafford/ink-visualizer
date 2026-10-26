@@ -1,27 +1,39 @@
 /**
- * Parameter schema. Single source of truth for the panel UI, the store,
- * presets and effects. Adding a parameter is one line in PARAMS.
+ * Parameter schema. Single source of truth for the panel UI, the store, presets and effects.
+ *
+ * App-level params (input / audio response / output) live in APP_PARAMS. Every effect exports
+ * its own PARAMS list built with the same helpers (num, color, toggle, n10...) and its own
+ * sections; the store holds APP_PARAMS plus the active effect's params.
  */
 
-export type SectionId = 'input' | 'particles' | 'trails' | 'look' | 'audio' | 'output';
+/** App-level sections. Effects declare their own (see EffectSection). */
+export type AppSectionId = 'input' | 'audio' | 'output';
+/** Any section id: an app section or one declared by an effect. */
+export type SectionId = string;
 
-export const SECTIONS: readonly { id: SectionId; label: string }[] = [
-  { id: 'input', label: 'Input' },
-  { id: 'particles', label: 'Particles' },
-  { id: 'trails', label: 'Trails' },
-  { id: 'look', label: 'Look' },
-  { id: 'audio', label: 'Audio response' },
-  { id: 'output', label: 'Output' },
-];
+export interface SectionDef { id: SectionId; label: string }
 
-/** Which control renders the param. Defaults: 'slider' for numbers, 'color' for colors. */
-export type ControlKind = 'slider' | 'knob' | 'color';
+export const APP_SECTIONS = {
+  input: { id: 'input', label: 'Input' },
+  audio: { id: 'audio', label: 'Audio response' },
+  output: { id: 'output', label: 'Output' },
+} as const satisfies Record<AppSectionId, SectionDef>;
 
-export interface NumberParamDef<Id extends string = string> {
-  kind: 'number';
+/** Which control renders the param. Defaults: 'slider' for numbers, 'color' for colors, segments for toggles. */
+export type ControlKind = 'slider' | 'knob' | 'color' | 'segments';
+
+/** Show the control only while another (number) param is at least `min`. */
+export interface VisibleWhen { id: string; min: number }
+
+interface BaseDef<Id extends string> {
   id: Id;
   label: string;
   section: SectionId;
+  visibleWhen?: VisibleWhen;
+}
+
+export interface NumberParamDef<Id extends string = string> extends BaseDef<Id> {
+  kind: 'number';
   min: number;
   max: number;
   step: number;
@@ -55,62 +67,51 @@ export interface DisplaySpec {
   pole?: number;
 }
 
-export interface ColorParamDef<Id extends string = string> {
+export interface ColorParamDef<Id extends string = string> extends BaseDef<Id> {
   kind: 'color';
-  id: Id;
-  label: string;
-  section: SectionId;
   /** Hex string, #rrggbb. */
   default: string;
   control?: 'color';
 }
 
-export type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<Id>;
+/** A choice between a few named values (the panel shows a segmented control). */
+export interface ToggleParamDef<Id extends string = string, V extends string = string> extends BaseDef<Id> {
+  kind: 'toggle';
+  options: readonly { value: V; label: string }[];
+  default: V;
+}
 
-type NumOpts = Partial<Pick<NumberParamDef, 'unit' | 'format' | 'control' | 'defaultMobile' | 'display'>>;
+export type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<Id> | ToggleParamDef<Id>;
 
-const num = <const Id extends string>(
+export type NumOpts = Partial<Pick<NumberParamDef, 'unit' | 'format' | 'control' | 'defaultMobile' | 'display' | 'visibleWhen'>>;
+
+export const num = <const Id extends string>(
   id: Id, label: string, section: SectionId,
   min: number, max: number, step: number, def: number, opts: NumOpts = {},
 ): NumberParamDef<Id> => ({ kind: 'number', id, label, section, min, max, step, default: def, ...opts });
 
-const color = <const Id extends string>(
-  id: Id, label: string, section: SectionId, def: string,
-): ColorParamDef<Id> => ({ kind: 'color', id, label, section, default: def });
+export const color = <const Id extends string>(
+  id: Id, label: string, section: SectionId, def: string, opts: { visibleWhen?: VisibleWhen } = {},
+): ColorParamDef<Id> => ({ kind: 'color', id, label, section, default: def, ...opts });
 
-const kilo = (v: number) => `${Math.round(v / 1000)}k`;
-const secs = (d: number) => (v: number) => `${v.toFixed(d)}s`;
-const times = (v: number) => `${v.toFixed(2)}\u00d7`;
+export const toggle = <const Id extends string, const V extends string>(
+  id: Id, label: string, section: SectionId, options: readonly { value: V; label: string }[], def: NoInfer<V>,
+): ToggleParamDef<Id, V> => ({ kind: 'toggle', id, label, section, options, default: def });
+
+export const kilo = (v: number) => `${Math.round(v / 1000)}k`;
+export const secs = (d: number) => (v: number) => `${v.toFixed(d)}s`;
+export const times = (v: number) => `${v.toFixed(2)}\u00d7`;
 
 /** 0..10 on the panel, linear. */
-const N10: DisplaySpec = { scale: 'norm10' };
+export const N10: DisplaySpec = { scale: 'norm10' };
 /** Persistence: the visible trail length goes as 1 / (1 - fade), so map log(1 - fade) linearly. */
-const N10_PERSIST: DisplaySpec = { scale: 'norm10', curve: 'log', pole: 1 };
-const n10 = (o: NumOpts = {}): NumOpts => ({ display: N10, ...o });
+export const N10_PERSIST: DisplaySpec = { scale: 'norm10', curve: 'log', pole: 1 };
+export const n10 = (o: NumOpts = {}): NumOpts => ({ display: N10, ...o });
 
 // Ranges and defaults are real units. Params with `display` show 0..10 on the panel.
+// App-level: audio response (read by the engine and by every effect's beat mapping).
 //            id                    label           section      min    max     step    default
-export const PARAMS = [
-  num('particleCount',      'Count',        'particles', 10000, 500000, 10000, 350000, { format: kilo, defaultMobile: 50000 }),
-  num('emissionRate',       'Emission',     'particles', 0,     1,      0.01,  0.5,    n10()),
-  num('lifespan',           'Lifespan',     'particles', 1,     10,     0.1,   5.5,    { format: secs(1) }),
-  num('speed',              'Speed',        'particles', 0.1,   2,      0.05,  1.05,   { format: times }),
-  num('wetness',            'Wetness',      'particles', 0,     1,      0.01,  0.5,    n10()),
-  num('turbulenceStrength', 'Turbulence',   'particles', 0,     3,      0.01,  0.45,    n10()),
-  num('turbulenceScale',    'Swirl',        'particles', 0.2,   4,      0.01,  0.77,    n10()),
-  num('drag',               'Drag',         'particles', 0,     1,      0.01,  0.5,    n10()),
-  num('emitters',           'Sources',      'particles', 1,     3,      1,     3),
-  num('trailFade',          'Persistence',  'trails',    0.85,  0.99,   0.0001, 0.9238,  { control: 'knob', display: N10_PERSIST }),
-  num('trailBlur',          'Blur',         'trails',    0,     6,      0.01,  1.5,    n10({ unit: 'px' })),
-  num('trailDrift',         'Drift',        'trails',    0,     2,      0.01,  0.5,    n10({ unit: 'px' })),
-  num('pointOpacity',       'Ink',          'look',      0.005, 0.4,    0.001, 0.2025,    n10()),
-  num('pointSize',          'Size',         'look',      0.5,   4,      0.01,  0.5,    n10({ unit: 'px' })),
-  color('inkColor1',        'Ink colour 1', 'look',      '#00BBFF'),
-  color('inkColor2',        'Ink colour 2', 'look',      '#EC008C'),
-  color('inkColor3',        'Ink colour 3', 'look',      '#FFF200'),
-  color('paperColor',       'Paper',        'look',      '#F7F7F5'),
-  num('contrast',           'Contrast',     'look',      0.5,   3,      0.01,  1.75,   { control: 'knob', display: N10 }),
-  num('grain',              'Grain',        'look',      0,     1,      0.01,  0.1,    n10()),
+export const APP_PARAMS = [
   num('bassSens',           'Bass',         'audio',     0,     6,      0.01,  3,      n10()),
   num('midSens',            'Mid',          'audio',     0,     6,      0.01,  3,      n10()),
   num('highSens',           'High',         'audio',     0,     6,      0.01,  3,      n10()),
@@ -119,25 +120,31 @@ export const PARAMS = [
   num('burstSize',          'Burst',        'audio',     0,     2,      0.01,  1,      n10()),
 ] as const satisfies readonly ParamDef[];
 
-export type AnyParamDef = (typeof PARAMS)[number];
-export type ParamId = AnyParamDef['id'];
-export type NumberParamId = Extract<AnyParamDef, { kind: 'number' }>['id'];
-export type ColorParamId = Extract<AnyParamDef, { kind: 'color' }>['id'];
-
-/** Concrete value bag: numbers for number params, hex strings for colors. */
-export type Params = {
-  [D in AnyParamDef as D['id']]: D extends { kind: 'color' } ? string : number;
+/** Value bag of a param list: numbers, hex strings, toggle values. */
+export type ValuesOf<T extends readonly ParamDef[]> = {
+  [D in T[number] as D['id']]: D extends { kind: 'number' } ? number : D extends ToggleParamDef<string, infer V> ? V : string;
 };
 
-const BY_ID = new Map<string, ParamDef>(PARAMS.map((d) => [d.id, d]));
-export const getDef = (id: ParamId): ParamDef => BY_ID.get(id)!;
+export type ParamValue = number | string;
+/** Untyped value bag (the store's view across effects). */
+export type ParamValues = Record<string, ParamValue>;
 
-export function defaultParams(env: { mobile?: boolean } = {}): Params {
-  const out: Record<string, number | string> = {};
-  for (const d of PARAMS as readonly ParamDef[]) {
+export type AppParams = ValuesOf<typeof APP_PARAMS>;
+export type AppParamId = keyof AppParams;
+
+export function defaultValues(defs: readonly ParamDef[], env: { mobile?: boolean } = {}): ParamValues {
+  const out: ParamValues = {};
+  for (const d of defs) {
     out[d.id] = d.kind === 'number' && env.mobile && d.defaultMobile !== undefined ? d.defaultMobile : d.default;
   }
-  return out as Params;
+  return out;
+}
+
+/** Validate one value against its def: clamp + snap numbers, check hex and toggle values. */
+export function sanitizeValue(def: ParamDef, value: unknown): ParamValue | undefined {
+  if (def.kind === 'color') return isHexColor(value) ? value.toUpperCase() : undefined;
+  if (def.kind === 'toggle') return def.options.some((o) => o.value === value) ? (value as string) : undefined;
+  return typeof value === 'number' ? quantize(def, value) : undefined;
 }
 
 /** Clamp and snap a number to a def's range and step. */

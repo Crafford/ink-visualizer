@@ -8,8 +8,10 @@ Static site, no backend. TypeScript + Vite + three.js (WebGL2) + Web Audio. No U
 src/
   main.ts                 composition root: store, engine, panel, transport, stage
   app/
-    params.ts             ParamDef schema (PARAMS), Params type, defaults, quantize/format/parse
-    store.ts              ParamStore: typed observable values, validated against the schema
+    params.ts             ParamDef schema + helpers (num/color/toggle, n10), APP_PARAMS (audio response),
+                          ValuesOf<>, defaults, quantize/format/parse/sanitize, uiScale
+    store.ts              ParamStore: app params + the active effect's params, validated against the
+                          schema; setEffect() swaps the effect set and keeps each effect's last values
     loop.ts               rAF loop, fixed-timestep accumulator (60 Hz step, per-frame render)
     stage.ts              canvas + WebGLRenderer, ResizeObserver, DPR cap, active Effect, screenshot
   audio/
@@ -17,22 +19,28 @@ src/
     AudioEngine.ts        AudioContext, sources, play/pause/seek, getFrame(), events
     analysis.ts           FeatureExtractor: bands, rise/fall smoothing, beat detection
   effects/
-    types.ts              Effect contract
-    registry.ts           id -> EffectFactory
-    ink/                  ink effect: InkEffect (TUNE, audio mapping), ParticleSim, Attractors,
-                          InkTrails (density/trail/composite), shaders/
+    types.ts              Effect contract, EffectEntry
+    registry.ts           EFFECTS: { id, label, params, sections, create, linked? }[] (Ink, Smoke)
+    shared/               Attractors (wandering sources), PingPongState (float MRT ping-pong particle
+                          state + sim pass), FullscreenPass, shaders/ (noise + curl + hash,
+                          fullscreen triangle + MAX_ATTRACTORS, two-layer blur header)
+    ink/                  ink effect: params.ts (INK_PARAMS, sections), InkEffect (TUNE, audio
+                          mapping), ParticleSim, InkTrails (density/trail/composite), shaders/
+    smoke/                smoke effect: params.ts (SMOKE_PARAMS, mode-linked colours), SmokeEffect
+                          (TUNE, audio mapping, splat), SmokeTrails (trail, light/dark composite), shaders/
   ui/
     tokens.css, app.css   design tokens and component styles
     dom.ts                h(), Component, Disposer
-    Panel.ts              builds sections and controls from PARAMS
+    Panel.ts              header effect selector; builds sections and controls from the schema
     PresetsSection.ts     preset select, Reset (reload preset), Save/Delete inline, Export/Import
     InputSection.ts       source tabs, status, level meter
     Transport.ts          floating pill: play/pause, time, seek, fullscreen
-    components/           Slider, NumberField, Knob, ColorField, Tabs, Button, LevelMeter
+    components/           Slider, NumberField, Knob, ColorField, Segments (toggle params, effect
+                          selector), Tabs, Button, LevelMeter
   presets/
     types.ts              Preset, PresetStorage, PresetFile, PRESET_SCHEMA
-    store.ts              PresetBank: built-in Default (from the schema), user presets in
-                          localStorage, JSON export/import with validation
+    store.ts              PresetBank: built-in Default per effect (from the schema), user presets in
+                          localStorage, JSON export/import with validation, filtered by effect
 ```
 
 Dependency direction: `ui -> app, audio`; `app/stage -> effects, audio, app/store`;
@@ -49,7 +57,8 @@ rAF tick (Loop)
   render(): effect.render({ ..., dt: frameDt })
             pending screenshot -> canvas.toBlob (same task, no preserveDrawingBuffer)
 
-UI input -> store.set(id, v) -> sanitize (clamp, snap, hex) -> listeners
+UI input -> store.set(id, v) -> sanitize (clamp, snap, hex, toggle value) -> listeners
+            -> effect entry linked(id) (e.g. Smoke Mode swaps default colours; not during preset load)
   - controls repaint themselves (store.watch)
   - audio response keys -> engine.configure()
   - effect.onParamChange?(id) for expensive changes (e.g. particleCount realloc)
@@ -62,36 +71,50 @@ Audio is sampled once per display frame and shared by all fixed steps in that fr
 ## Effect contract
 
 ```ts
-interface EffectContext {
+interface EffectContext<P = ParamValues> {
   audio: Readonly<AudioFrame>;   // see Audio below
   time: number;                  // simulation clock, seconds
   dt: number;                    // 1/60 in step(), wall-clock delta in render()
-  params: Readonly<Params>;
+  params: Readonly<P>;           // APP_PARAMS + the effect's own params
   renderer: WebGLRenderer;
   size: Readonly<RenderSize>;    // CSS px width/height + applied dpr
 }
 
-interface Effect {
+interface Effect<P = ParamValues> {
   readonly id: string;
   readonly label: string;
-  step(ctx: EffectContext): void;      // 0..N times per frame, fixed dt
-  render(ctx: EffectContext): void;    // once per frame, to the default framebuffer
+  step(ctx: EffectContext<P>): void;      // 0..N times per frame, fixed dt
+  render(ctx: EffectContext<P>): void;    // once per frame, to the default framebuffer
   resize(size: Readonly<RenderSize>, renderer: WebGLRenderer): void;
-  onParamChange?(id: ParamId, params: Readonly<Params>): void;
+  onParamChange?(id: string, params: Readonly<P>): void;
   dispose(): void;
 }
-type EffectFactory = (renderer: WebGLRenderer, params: Readonly<Params>) => Effect;
+type EffectFactory = (renderer: WebGLRenderer, params: Readonly<ParamValues>) => Effect;
+
+interface EffectEntry {                    // one line in registry.ts
+  id: string; label: string;
+  params: readonly ParamDef[];             // the effect's own params (APP_PARAMS are added)
+  sections: readonly SectionDef[];         // panel sections for them, in order
+  create: EffectFactory;
+  linked?(id, values): ParamValues | null; // values to apply after a user change
+}
 ```
 
 Rules: the app owns renderer, canvas, audio and params. An effect owns only the GPU
 resources it creates and must free them all in `dispose()`. Context objects are reused
-between frames: read them, never keep references. Effects may ignore params they do
-not use; a new effect is one file plus one line in `registry.ts`.
+between frames: read them, never keep references. A new effect is a folder with a
+`params.ts` (its PARAMS and sections) and the effect class, plus one entry in `registry.ts`;
+each effect types its params as `AppParams & ValuesOf<typeof ITS_PARAMS>`.
+
+Switching effect (panel header selector, `setEffect(id)` in main.ts): the store saves the
+outgoing effect's values and loads the incoming effect's last values (defaults the first
+time; app params are untouched), then the stage disposes the old effect and creates the new
+one (new trails, so the canvas starts empty), and the panel rebuilds the effect sections.
 
 ## Parameter schema
 
 ```ts
-type SectionId = 'input' | 'particles' | 'trails' | 'look' | 'audio' | 'output';
+type SectionId = string;   // app: 'input' | 'audio' | 'output'; effects declare their own
 
 interface NumberParamDef<Id extends string = string> {
   kind: 'number'; id: Id; label: string; section: SectionId;
@@ -99,17 +122,25 @@ interface NumberParamDef<Id extends string = string> {
   defaultMobile?: number; unit?: string; format?: (v: number) => string;
   control?: 'slider' | 'knob';
   display?: { scale: 'norm10'; curve?: 'linear' | 'pow' | 'log'; exponent?: number; pole?: number };
+  visibleWhen?: { id: string; min: number };   // e.g. colour 2 only with Sources >= 2
 }
 interface ColorParamDef<Id extends string = string> {
-  kind: 'color'; id: Id; label: string; section: SectionId; default: string; control?: 'color';
+  kind: 'color'; id: Id; label: string; section: SectionId; default: string; visibleWhen?: ...;
 }
-type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<Id>;
+interface ToggleParamDef<Id extends string = string, V extends string = string> {
+  kind: 'toggle'; id: Id; label: string; section: SectionId;
+  options: readonly { value: V; label: string }[]; default: V;   // panel: segmented control
+}
+type ParamDef<Id extends string = string> = NumberParamDef<Id> | ColorParamDef<Id> | ToggleParamDef<Id>;
 ```
 
-`PARAMS` is a `const` array built with `num(...)` and `color(...)` helpers, so ids stay
-literal types. `Params` (the value bag) and `ParamId` are derived from it. Adding a
-parameter is one line in `PARAMS`; the panel control, store validation, reset, preset
-typing and `ctx.params.<id>` all follow automatically.
+`APP_PARAMS` (params.ts: bassSens, midSens, highSens, smoothRise, smoothFall, burstSize) and
+each effect's `INK_PARAMS` / `SMOKE_PARAMS` are `const` arrays built with the `num(...)`,
+`color(...)` and `toggle(...)` helpers, so ids stay literal types; `ValuesOf<typeof X>` gives
+the value bag. Adding a parameter is one line in the effect's list; the panel control, store
+validation, reset, presets and `ctx.params.<id>` follow automatically. Effects may reuse ids
+with the same meaning (Count, Emission, Lifespan, Speed, Turbulence, Swirl, Drag, Sources,
+Contrast, Grain); values are kept per effect.
 
 ### Panel scale (0..10)
 
@@ -169,7 +200,7 @@ the paper and stops, feathering at the edges. Wetness turns dry card into wet wa
      view half-heights/s x wetness influence x (1 + 1.5 mid).
    - The particle velocity relaxes toward the medium at `6 * (0.25 + drag) * wetRelax` per second,
      which is also what kills a splat launch (dry: ~0.1 s).
-   - Sources (`Attractors.ts`, CPU) wander at phase rate 0.4 x `speed` x (1 + bass): a full
+   - Sources (`shared/Attractors.ts`, CPU) wander at phase rate 0.4 x `speed` x (1 + bass): a full
      traverse of the central 60% of the view takes 40-60 s.
    All tuning lives in `TUNE` (InkEffect.ts), exposed as `stage.effect.tune` with `?debug`.
 3. Splat pass (`shaders/points.glsl.ts`): `gl.LINES`, two vertices per particle, no
@@ -191,6 +222,12 @@ the paper and stops, feathering at the edges. Wetness turns dry card into wet wa
    S-curve). Ink colour = exp(-K), K = per-layer mean absorbance rgb / a, layers weighted by
    coverage, so overlapping inks mix subtractively. Result = mix(paper, ink colour, coverage) +
    paper texture + grain.
+
+Shared with Smoke (`effects/shared/`): Attractors, PingPongState (ParticleSim maps SimInputs
+onto the uniforms and runs it), FullscreenPass, noise/curl/hash GLSL, fullscreen triangle and
+the blur header. These were moved, not changed: the Ink shaders are textually identical and
+a 10 s fake-clock still matches the pre-M7 build (mean abs diff 0.004 / 255, the same as two
+runs of the old build).
 
 Per-source colours: `inkColor1..3` (defaults #000000, #0091FF, #FF0000); the panel shows colour
 2 and 3 only when Sources (`emitters`) >= 2 / 3.
@@ -239,6 +276,47 @@ Bands arrive already multiplied by their sensitivity slider (0 = off, 1 = nomina
 
 The panel's level meter has a beat blip (accent dot, 200 ms fade, brightness from the beat
 strength) and the `engine.bpm` estimate, from the engine's `beat` event, for tuning Beat thresh.
+
+## Smoke effect
+
+Metaphor: buoyant smoke from 1-3 slowly wandering sources (the ink Attractors, shifted down:
+y x 0.7 - 0.32). No drops, bleed or wetness. State: shared PingPongState, 3 attachments:
+A pos.xy vel.xy; B age, life (< 0 dormant), seed, source (+ 4 = puff smoke); C ring centre.xy,
+roll speed, puff flag. Tuning in `TUNE` (SmokeEffect.ts) and `SMOKE_LOOK` (SmokeTrails.ts).
+
+1. Emission = rings: a dormant particle wakes at `emissionRate * 0.15 * (1 + 2 bass) * dt` on a
+   ring (r 0.03) around a random source, moving outward (0.03) + rolling along the ring (0.05 x a
+   per-source sign that drifts between left and right over a few seconds) + upward at the
+   terminal rise speed, so the stream curls off the source and never pools there.
+2. Beat = puff: `burstSize * max(bs, 0.25) * 0.07` of all particles respawn on the ring at every
+   source, launched outward at `0.4 * (0.5 + bs)` (lobed around the ring, new shape per puff) +
+   rolling 0.1 + half the rise speed; life x 0.8. Puffs keep rolling about the ring centre
+   (decay 1.4 s), drag slows the ring, then turbulence breaks it up. No rays, no jets.
+3. Motion (sim seconds, x Speed): medium = three-octave curl noise, frequency `turbulenceScale x
+   1.2`, `turbulenceStrength x 0.12 x (1 + 1.5 mid)`; the finer octaves ramp in over 2.5 s of
+   age (laminar near the source, wisps further up). The curl field itself rises at half the
+   terminal rise speed, so eddies travel with the smoke and nothing gets trapped circling one.
+   Widening: lateral spread `rise x 0.5` 1/s away from the emission x, above the source.
+   Velocity relaxes toward the medium at `2 x (0.25 + drag)`; buoyancy adds `rise x 1.2` up per
+   s^2 (terminal ~0.32 view half-heights/s at the defaults). Death at end of life or outside.
+4. Splat (`shaders/points.glsl.ts`, copy of ink's): line segments, additive; rgb = ink x the
+   source's colour vector (absorbance on light paper, the colour itself in dark mode), a = ink.
+   Cooling: ink x (1 - age/life)^1.6, thinning all its life (ink only fades in its last 30%);
+   the stream fades in over 1.2 s, puffs at once and x 1.5. Kick, shiver and breath as ink (render only).
+5. Trails (`SmokeTrails`): line layer fade 0.82/step, blur `lerp(0.5, 3, softness)` CSS px; wash
+   fade 0.975/step, blur `lerp(0.6, 3.5, haze)`, drifting up 0.35 CSS px/step with a slow sway.
+   Beat swell on the wash as ink. Mode change clears the trails (the rgb encoding changes).
+6. Composite: Light paper = ink's subtractive composite (wash gain `lerp(0.1, 0.8, haze)`, cap
+   0.55, contrast S-curve, paper texture). Dark = additive light: per channel
+   E = line.rgb + wash.rgb x washGain, light = contrast(1 - exp(-E)),
+   result = background + (1 - background) x light. Grain as ink in both.
+
+Mode (`toggle`): switching swaps every colour still at the other mode's default to this
+mode's default (light: #2B2B2B #3A4A5A #5A3A3A on #F7F7F5; dark: #E8E8E8 #9FB8D0 #D0A090 on
+#0B0B0C); custom colours stay. Presets apply values without this link.
+
+Audio: bass -> emission x (1 + 2 bass) and wander x (1 + bass); mid -> turbulence x (1 + 1.5 mid);
+high -> curl frequency x (1 + high), ink x (1 + 0.5 high); beat -> puff, kick, shiver, wash swell.
 
 ## Audio
 
@@ -296,32 +374,38 @@ Add `?debug` to the URL to expose `engine`, `store` and `stage` on `window` in p
 ## UI
 
 Panel and transport are plain functions returning `{ el, dispose }`. The header reads
-"Visualizer" with the active effect ("Ink") as a small tag next to it. Layout lives only in
+"Visualizer" followed by the effect selector (a small mono segmented control: INK | SMOKE,
+arrow keys move) and the version. Section order: Presets, Input, the effect's sections
+(Ink: Particles, Trails, Look; Smoke: Plume, Look), Audio response, Output. Layout lives only in
 CSS (`.shell` grid: 320px panel, canvas fills the rest), so the panel can become a bottom
 sheet under 768px without code changes. The accent colour is reserved for the active tab,
 seek fill, level meter and focus ring.
 
 ## Presets
 
-`PresetBank` (presets/store.ts). The built-in "Default" is generated from the schema
-(`defaultParams`, env-aware). User presets live in localStorage under
+`PresetBank` (presets/store.ts). Each effect has a built-in "Default" generated from its
+schema (`builtin:default:<effect>`, env-aware). User presets live in localStorage under
 `visualizer.presets.v1` as `{ schema: 1, presets: Preset[] }`, each preset
 `{ version, id, name, effect, params, createdAt }` with `params` as REAL values keyed by param
-id. Loading resolves a preset over the defaults: unknown ids are ignored, missing or
+id: the app params plus that effect's params. The shape did not change in M7, so the schema
+stays 1; a stored or imported preset without `effect` is an Ink preset (all M6 presets were),
+and stored presets of unknown effects are kept but not shown. Loading resolves a preset over the defaults: unknown ids are ignored, missing or
 invalid values come from the defaults, and the store clamps and snaps. Save overwrites a
 user preset of the same name; "Default" is reserved. Storage failures fall back to memory.
 
-Panel: select (Default + user presets), Reset (reload the selected preset), Save (inline
+Panel: select (Default + the active effect's user presets; the selection is remembered per
+effect for the session), Reset (reload the selected preset), Save (inline
 name field), Delete (user presets only, inline confirm), Export (the selected preset as
 `preset-<name>.json`, `{ format: 'visualizer/presets', schema: 1, presets: [...] }`) and
 Import (validates the format and values, adds every valid preset with a de-duplicated name,
-then selects and loads the first). The page always starts on Default.
+then selects and loads the first, switching effect when it belongs to another one). Names are
+unique per effect. The page always starts on Ink with Default.
 
 ## Output
 
 Screenshot: the next rendered frame is read with `canvas.toBlob` in the same task as the
 draw (no preserveDrawingBuffer), at the drawing-buffer size (CSS size x dpr, dpr capped at
-2), composited on the paper colour; saved as `ink-YYYYMMDD-HHMMSS.png` (local time).
+2), composited on the paper colour; saved as `<effect>-YYYYMMDD-HHMMSS.png` (local time).
 Fullscreen targets the stage container: the panel is outside it and hides, the transport
 pill is inside it and stays; the ResizeObserver reallocates the trail targets (cleared).
 
@@ -329,5 +413,6 @@ pill is inside it and stays; the ResizeObserver reallocates the trail targets (c
 
 M0/M1 architecture, scaffold, panel shell. M2 GPU ink effect, mic/link/capture.
 M3-M5b ink effect, trails, audio response. M6 0..10 panel scale, presets (localStorage +
-JSON file), output checks, "Visualizer" title. Next: effect selector, performance tiers,
+JSON file), output checks, "Visualizer" title. M7 effect selector, per-effect params and presets,
+shared effect infrastructure, Smoke effect (light paper / dark). Next: performance tiers,
 mobile sheet.

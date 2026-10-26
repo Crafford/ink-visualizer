@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import type { Effect, EffectContext, RenderSize } from '../types';
+import type { Effect, EffectContext, EffectFactory, RenderSize } from '../types';
 import type { AudioFrame } from '../../audio/types';
-import type { ParamId, Params } from '../../app/params';
-import { Attractors } from './Attractors';
+import type { InkParams } from './params';
+import { Attractors } from '../shared/Attractors';
 import { InkTrails } from './InkTrails';
 import { ParticleSim, type SimInputs } from './ParticleSim';
 import { POINTS_FRAG, POINTS_VERT } from './shaders/points.glsl';
-import { MAX_ATTRACTORS } from './shaders/sim.glsl';
+import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 
 type Range = readonly [number, number];
 const lerp = (r: Range, t: number) => r[0] + (r[1] - r[0]) * t;
@@ -98,7 +98,7 @@ const TUNE = {
  * Speed scales the simulation clock (sim dt, wander); trails and render-time audio response
  * stay on the real clock.
  */
-export class InkEffect implements Effect {
+export class InkEffect implements Effect<InkParams> {
   readonly id = 'ink';
   readonly label = 'Ink';
   /** Tuning table, read every step (reachable from the console via ?debug). */
@@ -148,7 +148,7 @@ export class InkEffect implements Effect {
     uBreath: { value: 0 },
   };
 
-  constructor(renderer: THREE.WebGLRenderer, params: Readonly<Params>) {
+  constructor(renderer: THREE.WebGLRenderer, params: Readonly<InkParams>) {
     this.sim = new ParticleSim(renderer, params.particleCount);
     const T = TUNE;
     this.inputs = {
@@ -191,7 +191,7 @@ export class InkEffect implements Effect {
   }
   private bufferSize = new THREE.Vector2();
 
-  onParamChange(id: ParamId, params: Readonly<Params>): void {
+  onParamChange(id: string, params: Readonly<InkParams>): void {
     if (id !== 'particleCount') return;
     this.sim.allocate(params.particleCount);
     this.geometry.setDrawRange(0, 2 * params.particleCount);
@@ -204,7 +204,7 @@ export class InkEffect implements Effect {
     return this.rng / 4294967296;
   }
 
-  step({ dt, time, params, audio, renderer }: EffectContext): void {
+  step({ dt, time, params, audio, renderer }: EffectContext<InkParams>): void {
     const s = this.inputs;
     const T = this.tune;
     const wet = params.wetness;
@@ -278,7 +278,7 @@ export class InkEffect implements Effect {
 
   /** Draw the particles into `target` (null = default framebuffer). Does not clear. */
   renderParticles(
-    renderer: THREE.WebGLRenderer, params: Readonly<Params>, target: THREE.WebGLRenderTarget | null,
+    renderer: THREE.WebGLRenderer, params: Readonly<InkParams>, target: THREE.WebGLRenderTarget | null,
     audio?: Readonly<AudioFrame>, time = 0,
   ): void {
     const T = this.tune;
@@ -311,7 +311,7 @@ export class InkEffect implements Effect {
   }
 
   /** Source colours -> absorbance (-ln of the sRGB value), parsed only on change. */
-  private updateAbsorb(params: Readonly<Params>): void {
+  private updateAbsorb(params: Readonly<InkParams>): void {
     const hex = [params.inkColor1, params.inkColor2, params.inkColor3];
     for (let i = 0; i < MAX_ATTRACTORS; i++) {
       if (hex[i] === this.inkHex[i]) continue;
@@ -323,7 +323,7 @@ export class InkEffect implements Effect {
     }
   }
 
-  render({ renderer, params, time, audio }: EffectContext): void {
+  render({ renderer, params, time, audio }: EffectContext<InkParams>): void {
     if (audio.beat && !this.beatUsed) this.beatPending = true;
     this.beatUsed = false;
     if (this.stepsSinceRender > 0) {
@@ -344,4 +344,4 @@ export class InkEffect implements Effect {
   }
 }
 
-export const createInkEffect = (r: THREE.WebGLRenderer, p: Readonly<Params>) => new InkEffect(r, p);
+export const createInkEffect: EffectFactory = (r, p) => new InkEffect(r, p as Readonly<InkParams>);

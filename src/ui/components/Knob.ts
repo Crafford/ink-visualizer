@@ -1,4 +1,4 @@
-import { uiScale, type NumberParamDef, type NumberParamId } from '../../app/params';
+import { uiScale, type NumberParamDef } from '../../app/params';
 import type { ParamStore } from '../../app/store';
 import { h, nextId, type Component } from '../dom';
 import { createNumberField } from './NumberField';
@@ -14,7 +14,7 @@ const DRAG_PX = 180;
  * Drag vertically to change, double-click to reset.
  */
 export function createKnob(def: NumberParamDef, store: ParamStore): Component {
-  const id = def.id as NumberParamId;
+  const id = def.id;
   const inputId = nextId(`p-${def.id}`);
   const scale = uiScale(def);
 
@@ -44,7 +44,7 @@ export function createKnob(def: NumberParamDef, store: ParamStore): Component {
     knob.setPointerCapture(e.pointerId);
     knob.classList.add('is-dragging');
     startY = e.clientY;
-    startU = scale.toUi(store.get(id));
+    startU = scale.toUi(store.num(id));
     range.focus({ preventScroll: true });
   });
   knob.addEventListener('pointermove', (e) => {
@@ -68,6 +68,6 @@ export function createKnob(def: NumberParamDef, store: ParamStore): Component {
     h('label', { class: 'ctl-label', for: inputId }, def.label),
     field.el,
   );
-  const unwatch = store.watch(id, paint);
+  const unwatch = store.watch<number>(id, paint);
   return { el, dispose: unwatch };
 }

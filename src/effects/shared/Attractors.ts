@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MAX_ATTRACTORS } from './shaders/sim.glsl';
+import { MAX_ATTRACTORS } from './shaders/fullscreen.glsl';
 
 /** Deterministic PRNG so each attractor keeps its own path between reloads. */
 function mulberry32(seed: number): () => number {
