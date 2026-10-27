@@ -13,8 +13,8 @@ const SOURCES_3 = { visibleWhen: { id: 'emitters', min: 3 } };
 
 /** Colour defaults per Mode: grey smoke on paper, light smoke on black. */
 export const SMOKE_MODE_COLOURS = {
-  light: { smokeColor1: '#2B2B2B', smokeColor2: '#3A4A5A', smokeColor3: '#5A3A3A', background: '#F7F7F5' },
-  dark: { smokeColor1: '#E8E8E8', smokeColor2: '#9FB8D0', smokeColor3: '#D0A090', background: '#0B0B0C' },
+  light: { smokeColor1: '#00BBFF', smokeColor2: '#EC008C', smokeColor3: '#FFF200', background: '#F7F7F5' },
+  dark: { smokeColor1: '#00BBFF', smokeColor2: '#EC008C', smokeColor3: '#FFF200', background: '#000000' },
 } as const;
 const L = SMOKE_MODE_COLOURS.light;
 
@@ -32,7 +32,7 @@ export const SMOKE_PARAMS = [
   num('turbulenceScale',    'Swirl',        'plume', 0.2,   4,      0.01,  0.58,   n10()),
   num('drag',               'Drag',         'plume', 0,     1,      0.01,  0.5,    n10()),
   num('emitters',           'Sources',      'plume', 1,     3,      1,     3),
-  toggle('mode',            'Mode',         'look',  [{ value: 'light', label: 'Light paper' }, { value: 'dark', label: 'Dark' }], 'light'),
+  toggle('mode',            'Mode',         'look',  [{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }], 'light'),
   num('density',            'Density',      'look',  0.005, 0.4,    0.001, 0.1,    n10()),
   num('softness',           'Softness',     'look',  0,     1,      0.01,  0.5,    n10()),
   num('haze',               'Haze',         'look',  0,     1,      0.01,  0.5,    n10()),
