@@ -1,5 +1,5 @@
 /**
- * GLSL helpers shared by the effect shaders (generic).
+ * GLSL helpers shared by the effect shaders (ink, smoke).
  *
  * - snoiseGrad: 3D simplex noise that also returns its analytic gradient, so curl noise
  *   costs one noise evaluation per octave instead of four finite differences.

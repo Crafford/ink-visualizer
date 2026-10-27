@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { InkParams } from './params';
 import { FullscreenPass } from '../shared/FullscreenPass';
-import { MAX_ATTRACTORS } from './Attractors';
+import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 import { BLUR_H_FRAG, BLUR_V_FRAG, COMPOSITE_FRAG } from './shaders/trail.glsl';
 
 /** Look tuning that is not exposed in the panel. */

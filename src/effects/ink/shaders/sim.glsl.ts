@@ -1,5 +1,5 @@
 import { NOISE_GLSL } from '../../shared/shaders/noise.glsl';
-import { MAX_ATTRACTORS } from '../Attractors';
+import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
 
 /**
  * One simulation step. Each fragment is one particle.

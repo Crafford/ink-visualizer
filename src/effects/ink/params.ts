@@ -28,7 +28,7 @@ export const INK_PARAMS = [
   num('trailBlur',          'Blur',         'trails',    0,     6,      0.01,  1.5,    n10({ unit: 'px' })),
   num('trailDrift',         'Drift',        'trails',    0,     2,      0.01,  0.5,    n10({ unit: 'px' })),
   num('pointOpacity',       'Ink',          'look',      0.005, 0.4,    0.001, 0.2025,    n10()),
-  num('pointSize',          'Size',         'look',      0.25,  4,      0.01,  0.5,    n10({ unit: 'px' })),
+  num('pointSize',          'Size',         'look',      0.5,   4,      0.01,  0.5,    n10({ unit: 'px' })),
   color('inkColor1',        'Ink colour 1', 'look',      '#00BBFF'),
   color('inkColor2',        'Ink colour 2', 'look',      '#EC008C', SOURCES_2),
   color('inkColor3',        'Ink colour 3', 'look',      '#FFF200', SOURCES_3),

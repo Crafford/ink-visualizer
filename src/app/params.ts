@@ -116,7 +116,7 @@ export const APP_PARAMS = [
   num('midSens',            'Mid',          'audio',     0,     6,      0.01,  3,      n10()),
   num('highSens',           'High',         'audio',     0,     6,      0.01,  3,      n10()),
   num('smoothRise',         'Attack',       'audio',     0,     1,      0.01,  0.5,    n10({ format: secs(2) })),
-  num('smoothFall',         'Release',      'audio',     0,     1,      0.01,  0.5,    n10({ format: secs(2) })),
+  num('smoothFall',         'Release',       'audio',     0,     1,      0.01,  0.5,    n10({ format: secs(2) })),
   num('burstSize',          'Surge',        'audio',     0,     2,      0.01,  1,      n10()),
 ] as const satisfies readonly ParamDef[];
 

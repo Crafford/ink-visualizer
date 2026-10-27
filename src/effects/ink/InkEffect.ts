@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import type { Effect, EffectContext, EffectFactory, RenderSize } from '../types';
 import type { AudioFrame } from '../../audio/types';
 import type { InkParams } from './params';
-import { Attractors, MAX_ATTRACTORS } from './Attractors';
+import { Attractors } from '../shared/Attractors';
 import { InkTrails } from './InkTrails';
 import { ParticleSim, type SimInputs } from './ParticleSim';
 import { POINTS_FRAG, POINTS_VERT } from './shaders/points.glsl';
+import { MAX_ATTRACTORS } from '../shared/shaders/fullscreen.glsl';
 
 type Range = readonly [number, number];
 const lerp = (r: Range, t: number) => r[0] + (r[1] - r[0]) * t;

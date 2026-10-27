@@ -1,5 +1,5 @@
-import { MAX_ATTRACTORS } from '../Attractors';
-import { BLUR_COMMON } from './blur.glsl';
+import { MAX_ATTRACTORS } from '../../shared/shaders/fullscreen.glsl';
+import { BLUR_COMMON } from '../../shared/shaders/blur.glsl';
 
 /**
  * Trail feedback, two separable passes at drawing-buffer resolution, two RGBA layers
